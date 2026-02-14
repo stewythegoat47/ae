@@ -141,12 +141,14 @@ The human sees all panes and can type in any of them.
 
 ## How it works
 
-1. Parses `~/.ae/config`
-2. Creates a tmux session with one pane per agent
-3. Captures actual tmux pane IDs (works regardless of `base-index` settings)
-4. Writes `.ae/workspace.md` with the agent manifest
-5. Launches each agent with an initial prompt pointing to the manifest
+1. Validates `~/.ae/config`
+2. Creates a hardlink copy of the project at `~/.ae/worktrees/<session>/`
+3. Creates a tmux session with one pane per agent, all in the copy
+4. Writes a workspace manifest so agents know about each other
+5. Launches each agent with a prompt pointing to the manifest
 6. Attaches you to the session
+
+Agents work on the copy, not the original. Push to remote and merge from there. `ae kill` cleans up the copy.
 
 ## Requirements
 

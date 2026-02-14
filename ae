@@ -4,6 +4,7 @@ set -euo pipefail
 
 CONFIG_DIR="${HOME}/.ae"
 CONFIG_FILE="${CONFIG_DIR}/config"
+WORKTREES_DIR="${CONFIG_DIR}/worktrees"
 
 DEFAULT_CONFIG='[agents]
 cc = "claude --permission-mode bypassPermissions --model claude-opus-4-6"
@@ -43,7 +44,6 @@ parse_config() {
             val="$(echo "$val" | sed 's/[[:space:]]*$//')"
             printf '%s\n' "${section}.${BASH_REMATCH[1]}=${val}"
         else
-            # Comment-only or unrecognized line, skip
             continue
         fi
     done < "$CONFIG_FILE"
@@ -99,6 +99,16 @@ list_ae_sessions() {
     printf '%b' "$sessions"
 }
 
+# Clean up worktree for a session
+cleanup_worktree() {
+    local session_name="$1"
+    local wt="${WORKTREES_DIR}/${session_name}"
+    if [[ -d "$wt" ]]; then
+        rm -rf "$wt"
+        echo "Removed worktree for $session_name"
+    fi
+}
+
 # --- Subcommands ---
 case "${1:-}" in
     list|ls)
@@ -107,14 +117,14 @@ case "${1:-}" in
             echo "No ae sessions."
             exit 0
         fi
-        printf '%-40s  %-20s  %-6s  %s\n' "SESSION" "CREATED" "PANES" "DIRECTORY"
+        printf '%-40s  %-20s  %-6s  %s\n' "SESSION" "CREATED" "PANES" "ORIGIN"
         while IFS= read -r name; do
             [[ -z "$name" ]] && continue
             created="$(tmux display-message -t "$name" -p '#{session_created}' 2>/dev/null)"
             created_fmt="$(date -d "@${created}" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$created")"
             pane_count="$(tmux list-panes -t "$name" 2>/dev/null | wc -l)"
-            dir="$(tmux show-environment -t "$name" AE_DIR 2>/dev/null | sed 's/^AE_DIR=//' || echo "?")"
-            printf '%-40s  %-20s  %-6s  %s\n' "$name" "$created_fmt" "$pane_count" "$dir"
+            origin="$(tmux show-environment -t "$name" AE_ORIGIN 2>/dev/null | sed 's/^AE_ORIGIN=//' || echo "?")"
+            printf '%-40s  %-20s  %-6s  %s\n' "$name" "$created_fmt" "$pane_count" "$origin"
         done <<< "$sessions"
         exit 0
         ;;
@@ -133,11 +143,14 @@ case "${1:-}" in
             fi
             while IFS= read -r s; do
                 [[ -z "$s" ]] && continue
+                cleanup_worktree "$s"
                 tmux kill-session -t "$s"
                 echo "Killed $s"
             done <<< "$sessions"
         else
-            if tmux kill-session -t "$target" 2>/dev/null; then
+            if tmux has-session -t "$target" 2>/dev/null; then
+                cleanup_worktree "$target"
+                tmux kill-session -t "$target"
                 echo "Killed $target"
             else
                 echo "Session '$target' not found." >&2
@@ -155,6 +168,9 @@ case "${1:-}" in
         echo "  ae list             List all ae sessions"
         echo "  ae kill <name>      Kill a session (or 'ae kill all')"
         echo "  ae help             Show this help"
+        echo ""
+        echo "Each session works on a hardlink copy of the project."
+        echo "Push to remote and merge from there."
         echo ""
         echo "Config: ~/.ae/config"
         exit 0
@@ -178,7 +194,7 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
     fi
 fi
 
-# Read workspace config
+# --- Validate config before creating anything ---
 MAIN_ALIAS="$(get_config workspace.main)"
 LAYOUT="$(get_config workspace.layout)"
 WORKERS_RAW="$(get_config workspace.workers)"
@@ -194,7 +210,6 @@ if [[ -z "$MAIN_CMD" ]]; then
     exit 1
 fi
 
-# Parse workers (comma-separated)
 WORKER_CMDS=()
 WORKER_ALIASES=()
 if [[ -n "$WORKERS_RAW" ]]; then
@@ -211,16 +226,35 @@ if [[ -n "$WORKERS_RAW" ]]; then
     done
 fi
 
-# Create tmux session and capture pane IDs (robust against base-index settings)
-# Unset CLAUDECODE so Claude Code doesn't refuse to start inside an existing session
+# --- Create hardlink copy of the project ---
+ORIGIN_DIR="$PWD"
+WORK_DIR="${WORKTREES_DIR}/${SESSION}"
+
+if [[ -d "$WORK_DIR" ]]; then
+    # Stale worktree from a crashed/killed session — clean it up
+    echo "Removing stale worktree..."
+    rm -rf "$WORK_DIR"
+fi
+
+mkdir -p "$WORK_DIR"
+echo "Creating hardlink copy..."
+for item in "$PWD"/* "$PWD"/.[!.]* "$PWD"/..?*; do
+    [[ -e "$item" ]] || continue
+    cp -al "$item" "$WORK_DIR/"
+done
+echo "Working copy ready."
+
+# --- Create tmux session in the worktree ---
 PANE_IDS=()
-tmux new-session -d -s "$SESSION" -c "$PWD"
+tmux new-session -d -s "$SESSION" -c "$WORK_DIR"
+# Unset env vars that prevent Claude Code from starting inside tmux
 tmux set-environment -t "$SESSION" -u CLAUDECODE
 tmux set-environment -t "$SESSION" -u CLAUDE_CODE_SESSION
 
-# Tag as ae session and store working directory
+# Tag as ae session and store directories
 tmux set-environment -t "$SESSION" AE_SESSION 1
-tmux set-environment -t "$SESSION" AE_DIR "$PWD"
+tmux set-environment -t "$SESSION" AE_ORIGIN "$ORIGIN_DIR"
+tmux set-environment -t "$SESSION" AE_DIR "$WORK_DIR"
 
 # ae-specific tmux options (session-scoped, doesn't affect other tmux usage)
 tmux set-option -t "$SESSION" mouse on
@@ -234,11 +268,10 @@ PANE_IDS+=("$(tmux display-message -t "$SESSION" -p '#{pane_id}')")
 
 for i in "${!WORKER_CMDS[@]}"; do
     local_id=""
-    # vertical = vertical divider = side-by-side, horizontal = stacked
     if [[ "$LAYOUT" == "vertical" ]]; then
-        local_id="$(tmux split-window -h -t "$SESSION" -c "$PWD" -P -F '#{pane_id}')"
+        local_id="$(tmux split-window -h -t "$SESSION" -c "$WORK_DIR" -P -F '#{pane_id}')"
     else
-        local_id="$(tmux split-window -v -t "$SESSION" -c "$PWD" -P -F '#{pane_id}')"
+        local_id="$(tmux split-window -v -t "$SESSION" -c "$WORK_DIR" -P -F '#{pane_id}')"
     fi
     PANE_IDS+=("$local_id")
 done
@@ -260,12 +293,11 @@ for i in "${!WORKER_ALIASES[@]}"; do
 done
 
 # --- Generate workspace manifest ---
-AE_DIR="${PWD}/.ae/${SESSION}"
-mkdir -p "$AE_DIR"
+AE_META="${WORK_DIR}/.ae/${SESSION}"
+mkdir -p "$AE_META"
 
-MANIFEST="${AE_DIR}/workspace.md"
+MANIFEST="${AE_META}/workspace.md"
 
-# Build agent table rows using actual pane IDs
 ALL_ALIASES=("$MAIN_ALIAS" "${WORKER_ALIASES[@]}")
 ALL_CMDS=("$MAIN_CMD" "${WORKER_CMDS[@]}")
 ALL_ROLES=("main")
@@ -281,7 +313,11 @@ cat > "$MANIFEST" <<EOF
 # ae workspace
 
 Session: ${SESSION}
-Directory: ${PWD}
+Origin: ${ORIGIN_DIR}
+Directory: ${WORK_DIR}
+
+You are working on a hardlink copy of the project. Push to remote and merge from there.
+Do not modify the origin directory directly.
 
 ## Agents
 
@@ -308,12 +344,12 @@ tmux capture-pane -t "<tmux target>" -p | tail -20
 - Coordinate file edits -- don't modify the same file simultaneously
 - The human can see all panes and may intervene at any time
 - Use tmux send-keys to delegate tasks or request reviews from other agents
+- Push changes to remote -- do not modify the origin directory directly
 EOF
 
 INITIAL_PROMPT="You are in a multi-agent ae workspace. Read .ae/${SESSION}/workspace.md for details about other agents and how to communicate with them."
 
-# Launch agents with initial workspace awareness prompt (single-quote the prompt
-# so the receiving shell doesn't expand metacharacters in session names)
+# Launch agents (single-quote the prompt to prevent shell expansion)
 tmux send-keys -t "${PANE_IDS[0]}" "$MAIN_CMD '${INITIAL_PROMPT}'" C-m
 for i in "${!WORKER_CMDS[@]}"; do
     idx=$(( i + 1 ))

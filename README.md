@@ -49,10 +49,11 @@ Detach with `Ctrl+b d`. Agents keep running in the background.
 ## Commands
 
 ```
-ae              Start or reattach session for current directory
-ae list         Show all ae sessions
-ae kill <name>  Kill a specific session
-ae kill all     Kill all ae sessions
+ae                  Start or reattach default session for current directory
+ae <name>           Start or reattach a named session
+ae list             Show all ae sessions
+ae kill <name>      Kill a specific session
+ae kill all         Kill all ae sessions
 ae help         Show usage
 ```
 
@@ -130,12 +131,13 @@ The human sees all panes and can type in any of them.
 
 ## Session management
 
-Sessions are named after the working directory: `~/projects/my-app` becomes `ae-projects-my-app`.
-
-- One session per directory
-- `ae` from the same directory always reattaches
+- `ae` with no arguments creates a default session named after the directory
+- `ae self-learning` creates a session named `self-learning` -- you pick the name
+- Multiple named sessions can run in the same directory
+- `ae <name>` from anywhere reattaches if the session exists
 - Sessions survive terminal close (tmux runs in background)
 - Sessions do **not** survive reboot -- just run `ae` again
+- `ae list` shows all sessions with their directories
 
 ## How it works
 

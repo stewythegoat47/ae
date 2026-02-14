@@ -168,9 +168,14 @@ else
     SESSION="$(default_session_name)"
 fi
 
-# Existing session? Just reattach.
+# Existing session? Just reattach (but only if it's an ae session).
 if tmux has-session -t "$SESSION" 2>/dev/null; then
-    tmux_attach "$SESSION"
+    if tmux show-environment -t "$SESSION" AE_SESSION 2>/dev/null | grep -q '^AE_SESSION='; then
+        tmux_attach "$SESSION"
+    else
+        echo "Error: tmux session '$SESSION' exists but is not an ae session." >&2
+        exit 1
+    fi
 fi
 
 # Read workspace config

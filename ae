@@ -263,10 +263,13 @@ Directory: ${PWD}
 ${AGENT_ROWS}
 ## Communication
 
-Send a message to another agent:
+Send a message to another agent and press Enter:
 \`\`\`bash
-tmux send-keys -t "<tmux target>" "your message" C-m
+tmux send-keys -t "<tmux target>" "your message" Enter
 \`\`\`
+IMPORTANT: "Enter" MUST be a separate argument OUTSIDE the quotes. It is a tmux key name that presses Enter.
+Wrong: tmux send-keys -t "%1" "your message Enter"   -- this sends literal text "Enter"
+Right: tmux send-keys -t "%1" "your message" Enter    -- this sends the message then presses Enter
 
 Check another agent's recent output:
 \`\`\`bash

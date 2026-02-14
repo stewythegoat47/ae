@@ -293,9 +293,20 @@ for i in "${!WORKER_ALIASES[@]}"; do
     tmux select-pane -t "${PANE_IDS[$idx]}" -T "${WORKER_ALIASES[$i]}"
 done
 
-# --- Generate workspace manifest ---
+# --- Generate helper scripts and workspace manifest ---
 AE_META="${WORK_DIR}/.ae/${SESSION}"
 mkdir -p "$AE_META"
+
+# Helper: .ae/send <target> <message> — sends message and presses Enter
+cat > "${AE_META}/send" <<'SENDEOF'
+#!/usr/bin/env bash
+if [[ $# -lt 2 ]]; then
+    echo "Usage: .ae/send <tmux-target> <message>" >&2
+    exit 1
+fi
+tmux send-keys -t "$1" "$2" Enter
+SENDEOF
+chmod +x "${AE_META}/send"
 
 MANIFEST="${AE_META}/workspace.md"
 
@@ -327,13 +338,10 @@ Do not modify the origin directory directly.
 ${AGENT_ROWS}
 ## Communication
 
-Send a message to another agent and press Enter:
+Send a message to another agent (sends + presses Enter automatically):
 \`\`\`bash
-tmux send-keys -t "<tmux target>" "your message" Enter
+.ae/${SESSION}/send "<tmux target>" "your message"
 \`\`\`
-IMPORTANT: "Enter" MUST be a separate argument OUTSIDE the quotes. It is a tmux key name that presses Enter.
-Wrong: tmux send-keys -t "%1" "your message Enter"   -- this sends literal text "Enter"
-Right: tmux send-keys -t "%1" "your message" Enter    -- this sends the message then presses Enter
 
 Check another agent's recent output:
 \`\`\`bash

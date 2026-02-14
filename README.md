@@ -18,12 +18,17 @@ Agents know about each other. They can send messages, peek at output, and coordi
 ## Install
 
 ```bash
-git clone https://github.com/ckriech/ae.git ~/projects/ae
-cd ~/projects/ae
-./install
+curl -fsSL https://raw.githubusercontent.com/clemens33/ae/main/install | bash
 ```
 
-This symlinks `ae` to `~/.local/bin/ae`. Make sure `~/.local/bin` is on your `PATH`.
+Or clone manually:
+
+```bash
+git clone https://github.com/clemens33/ae.git ~/.local/share/ae
+~/.local/share/ae/install
+```
+
+Both methods symlink `ae` to `~/.local/bin/ae`. Make sure `~/.local/bin` is on your `PATH`.
 
 ## Quick start
 

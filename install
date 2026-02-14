@@ -1,9 +1,37 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO="https://github.com/clemens33/ae.git"
+INSTALL_DIR="${HOME}/.local/share/ae"
 TARGET="${HOME}/.local/bin/ae"
 
+# Resolve script directory (handles ./install, /path/to/install, and symlinks)
+SCRIPT_DIR=""
+if [[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "bash" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+
+# If run from a cloned repo (ae script exists next to install), just symlink
+if [[ -n "$SCRIPT_DIR" && -f "${SCRIPT_DIR}/ae" ]]; then
+    mkdir -p "$(dirname "$TARGET")"
+    ln -sf "${SCRIPT_DIR}/ae" "$TARGET"
+    echo "Linked ${TARGET} -> ${SCRIPT_DIR}/ae"
+    exit 0
+fi
+
+# Piped install: clone and symlink
+if ! command -v git &>/dev/null; then
+    echo "Error: git is required" >&2
+    exit 1
+fi
+
+mkdir -p "$(dirname "$INSTALL_DIR")"
+if [[ -d "$INSTALL_DIR/.git" ]]; then
+    git -C "$INSTALL_DIR" pull --ff-only
+else
+    git clone "$REPO" "$INSTALL_DIR"
+fi
+
 mkdir -p "$(dirname "$TARGET")"
-ln -sf "${SCRIPT_DIR}/ae" "$TARGET"
-echo "Linked ${TARGET} -> ${SCRIPT_DIR}/ae"
+ln -sf "${INSTALL_DIR}/ae" "$TARGET"
+echo "Installed ae to ${TARGET}"

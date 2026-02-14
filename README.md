@@ -136,8 +136,9 @@ The human sees all panes and can type in any of them.
 - Multiple named sessions can run in the same directory
 - `ae <name>` from anywhere reattaches if the session exists
 - Sessions survive terminal close (tmux runs in background)
-- Sessions do **not** survive reboot -- just run `ae` again
-- `ae list` shows all sessions with their directories
+- **Sessions survive reboot** -- the worktree persists on disk, run `ae <name>` again to resume agents with their previous conversation context
+- `ae list` shows running and stopped (resumable) sessions
+- `ae kill <name>` removes both the tmux session and the worktree
 
 ## How it works
 
@@ -148,7 +149,9 @@ The human sees all panes and can type in any of them.
 5. Launches each agent with a prompt pointing to the manifest
 6. Attaches you to the session
 
-Agents work on the copy, not the original. Push to remote and merge from there. `ae kill` cleans up the copy.
+Agents work on the copy, not the original. Push to remote and merge from there.
+
+After a reboot, run `ae <name>` again -- it detects the existing worktree, recreates the tmux layout, and resumes each agent's previous conversation (Claude Code via `--continue`, Codex via `resume --last`). `ae kill` cleans up both the tmux session and the worktree.
 
 ## Requirements
 

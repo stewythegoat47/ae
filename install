@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+TARGET="${HOME}/.local/bin/ae"
+
+mkdir -p "$(dirname "$TARGET")"
+ln -sf "${SCRIPT_DIR}/ae" "$TARGET"
+echo "Linked ${TARGET} -> ${SCRIPT_DIR}/ae"

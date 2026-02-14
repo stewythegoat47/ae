@@ -340,7 +340,7 @@ ${AGENT_ROWS}
 
 Send a message to another agent (sends + presses Enter automatically):
 \`\`\`bash
-.ae/${SESSION}/send "<tmux target>" "your message"
+${WORK_DIR}/.ae/${SESSION}/send "<tmux target>" "your message"
 \`\`\`
 
 Check another agent's recent output:

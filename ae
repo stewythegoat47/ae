@@ -345,14 +345,16 @@ done
 AE_META="${WORK_DIR}/.ae/${SESSION}"
 mkdir -p "$AE_META"
 
-# Helper: .ae/send <target> <message> — sends message and presses Enter
+# Helper: .ae/send <target> <message> — sends literal text and submits with C-m
 cat > "${AE_META}/send" <<'SENDEOF'
 #!/usr/bin/env bash
 if [[ $# -lt 2 ]]; then
     echo "Usage: .ae/send <tmux-target> <message>" >&2
     exit 1
 fi
-tmux send-keys -t "$1" "$2" Enter
+target="$1"; shift
+tmux send-keys -t "$target" -l "$*"
+tmux send-keys -t "$target" C-m
 SENDEOF
 chmod +x "${AE_META}/send"
 
@@ -400,7 +402,7 @@ tmux capture-pane -t "<tmux target>" -p | tail -20
 
 - Coordinate file edits -- don't modify the same file simultaneously
 - The human can see all panes and may intervene at any time
-- Use tmux send-keys to delegate tasks or request reviews from other agents
+- Always use the send helper above to communicate with other agents (never raw tmux send-keys)
 - Push changes to remote -- do not modify the origin directory directly
 EOF
 

@@ -1,5 +1,10 @@
 # ae
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Bash](https://img.shields.io/badge/bash-%3E%3D4.0-green.svg)](https://www.gnu.org/software/bash/)
+[![tmux](https://img.shields.io/badge/requires-tmux-1BB91F.svg)](https://github.com/tmux/tmux)
+[![Install](https://img.shields.io/badge/install-curl%20%7C%20bash-orange.svg)](#install)
+
 **Agentic engineering** -- run multiple AI coding agents side-by-side in tmux with shared awareness.
 
 ```

@@ -263,6 +263,7 @@ tmux set-option -t "$SESSION" pane-border-status top
 tmux set-option -t "$SESSION" pane-border-format " #{pane_index}: #{pane_title} "
 tmux set-option -t "$SESSION" status-left "[ae] "
 tmux set-option -t "$SESSION" automatic-rename off
+tmux rename-window -t "$SESSION" "$SESSION"
 
 PANE_IDS+=("$(tmux display-message -t "$SESSION" -p '#{pane_id}')")
 

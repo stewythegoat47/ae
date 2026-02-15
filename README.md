@@ -49,13 +49,33 @@ Detach with `Ctrl+b d`. Agents keep running in the background.
 ## Commands
 
 ```
-ae                  Start or reattach default session for current directory
+ae                  Start or reattach default session (git worktree)
 ae <name>           Start or reattach a named session
-ae list             Show all ae sessions
+ae --full [name]    Start session with full copy (includes untracked files)
+ae --git [name]     Start session with git worktree (default)
+ae list             Show all ae sessions (with mode column)
 ae kill <name>      Kill a specific session
 ae kill all         Kill all ae sessions
-ae help         Show usage
+ae help             Show usage
 ```
+
+## Copy modes
+
+By default, `ae` creates a **git worktree** (detached HEAD) for each session. This is fast, shares `.git` with the original repo, and provides true file isolation.
+
+Use `--full` when agents need untracked files like `node_modules/`, `.venv/`, or build artifacts:
+
+```bash
+ae --full my-rework
+```
+
+Set the default in config:
+```toml
+[workspace]
+copy = full    # or "git" (default)
+```
+
+CLI flags (`--full`, `--git`) always override the config.
 
 ## Config
 
@@ -84,6 +104,7 @@ Define any number of agents as aliases. The value is the full shell command to l
 | `main`    | Agent alias for the primary pane                      | `cc`       |
 | `workers` | Comma-separated agent aliases for additional panes    | `cx`       |
 | `layout`  | `vertical` (side-by-side) or `horizontal` (stacked)   | `vertical` |
+| `copy`    | `git` (worktree) or `full` (cp -a)                    | `git`      |
 
 ### Examples
 
@@ -97,6 +118,11 @@ Stacked layout:
 layout = horizontal
 ```
 
+Full copy mode by default:
+```toml
+copy = full
+```
+
 ## How agents communicate
 
 On session creation, `ae` writes `.ae/workspace.md` in the project directory:
@@ -106,6 +132,7 @@ On session creation, `ae` writes `.ae/workspace.md` in the project directory:
 
 Session: ae-projects-my-app
 Directory: /home/user/projects/my-app
+Mode: git
 
 ## Agents
 
@@ -119,7 +146,7 @@ Each agent starts with a prompt to read this file. From there, any agent can:
 
 **Send a message to another agent:**
 ```bash
-tmux send-keys -t "%1" "Review the changes in src/auth.ts" C-m
+.ae/<session>/send "%1" "Review the changes in src/auth.ts"
 ```
 
 **Check what another agent is doing:**
@@ -137,25 +164,26 @@ The human sees all panes and can type in any of them.
 - `ae <name>` from anywhere reattaches if the session exists
 - Sessions survive terminal close (tmux runs in background)
 - **Sessions survive reboot** -- the worktree persists on disk, run `ae <name>` again to resume agents with their previous conversation context
-- `ae list` shows running and stopped (resumable) sessions
+- `ae list` shows running and stopped (resumable) sessions with their copy mode
 - `ae kill <name>` removes both the tmux session and the worktree
 
 ## How it works
 
 1. Validates `~/.ae/config`
-2. Creates a hardlink copy of the project at `~/.ae/worktrees/<session>/`
+2. Creates a git worktree (default) or full copy at `~/.ae/worktrees/<session>/`
 3. Creates a tmux session with one pane per agent, all in the copy
 4. Writes a workspace manifest so agents know about each other
 5. Launches each agent with a prompt pointing to the manifest
 6. Attaches you to the session
 
-Agents work on the copy, not the original. Push to remote and merge from there.
+Agents work on the worktree, not the original. Push to remote and merge from there.
 
 After a reboot, run `ae <name>` again -- it detects the existing worktree, recreates the tmux layout, and resumes each agent's previous conversation (Claude Code via `--continue`, Codex via `resume --last`). `ae kill` cleans up both the tmux session and the worktree.
 
 ## Requirements
 
 - [tmux](https://github.com/tmux/tmux)
+- [git](https://git-scm.com/) (for default worktree mode; not needed with `--full`)
 - At least one AI coding agent ([Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [OpenCode](https://github.com/opencode-ai/opencode), or any CLI tool)
 
 ## License

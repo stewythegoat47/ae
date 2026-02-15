@@ -13,7 +13,7 @@ Single bash script. No dependencies beyond bash and tmux. Keep it that way.
 
 - `ae` must remain a single bash script. No compiled languages, no runtimes.
 - Config is INI-style with a simple regex parser. Don't add TOML/YAML/JSON parsing.
-- No dependencies beyond bash >= 4.0 and tmux.
+- No dependencies beyond bash >= 4.0, tmux, and git.
 - `.ae/` in project dirs is session-local state -- always gitignored.
 - No AI tool attribution in commits.
 
@@ -30,7 +30,7 @@ CLAUDE.md — @AGENTS.md
 ## How it works
 
 1. Parses `~/.ae/config` for agent commands and layout
-2. Creates tmux session named `ae-<path>-<hash>` from `$PWD`
+2. Creates a git worktree (default) or full copy (`--full`) at `~/.ae/worktrees/<session>/`
 3. Writes `.ae/workspace.md` so agents know about each other
 4. Launches agents with a prompt to read the manifest
 5. Attaches

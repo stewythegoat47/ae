@@ -36,6 +36,8 @@ CLAUDE.md — @AGENTS.md
 5. Launches agents with a prompt to read the manifest
 6. Attaches
 
+`ae end` commits + pushes to `ae/<session>` branch, then cleans up. `ae discard` destroys without saving.
+
 ## Config
 
 ```toml

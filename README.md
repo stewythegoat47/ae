@@ -54,7 +54,8 @@ ae --worktree [name]   Start session with git worktree (default)
 ae --copy [name]       Start session with full copy (includes untracked files)
 ae --local [name]      Start session in current directory (no copy)
 ae list                List all ae sessions
-ae kill <name>         Kill a session (or 'ae kill all')
+ae end <name>          End session: commit, push to ae/<name> branch, clean up
+ae discard <name>      Discard session without saving (destroy worktree/copy)
 ae help                Show usage
 ```
 
@@ -181,6 +182,31 @@ tmux capture-pane -t "%1" -p | tail -20
 
 The human sees all panes and can type in any of them.
 
+## Ending sessions
+
+When you're done, `ae end` commits any uncommitted work, pushes it to a branch, and cleans up:
+
+```bash
+ae end my-feature        # commit + push to origin/ae/my-feature, then remove worktree
+ae end all               # end all sessions
+```
+
+What `ae end` does (worktree/copy mode with git):
+1. `git add -A && git commit` if there are uncommitted changes
+2. `git push -u origin HEAD:refs/heads/ae/<session>` if there are unpushed commits
+3. Kill the tmux session and remove the worktree/copy
+
+If the push fails, the session is **preserved** -- nothing is deleted. Fix the issue and retry.
+
+For local mode, `ae end` just kills the tmux session (files are already in your project directory).
+
+To throw away a session without saving:
+
+```bash
+ae discard my-experiment   # destroy without commit/push
+ae discard all
+```
+
 ## Session management
 
 - `ae` with no arguments creates a default session named after the directory
@@ -192,7 +218,8 @@ The human sees all panes and can type in any of them.
 - Local sessions do not survive reboot (no separate directory to detect)
 - On resume, config-defined agents (main + workers) are relaunched; runtime-spawned agents are not
 - `ae list` shows running and stopped (resumable) sessions with their mode
-- `ae kill <name>` removes both the tmux session and associated resources
+- `ae end <name>` preserves work (commit + push) then cleans up
+- `ae discard <name>` destroys the session without saving
 
 ## How it works
 
@@ -203,9 +230,7 @@ The human sees all panes and can type in any of them.
 5. Launches agents with a prompt pointing to the manifest
 6. Attaches you to the session
 
-In worktree/copy mode, agents work on a separate directory. Push to remote and merge from there. After a reboot, run `ae <name>` again to resume. In local mode, agents work directly on the original files.
-
-`ae kill` cleans up the tmux session and any associated worktree/copy.
+In worktree/copy mode, agents work on a separate directory. When done, `ae end` commits and pushes the work, then cleans up. After a reboot, run `ae <name>` again to resume. In local mode, agents work directly on the original files.
 
 ## Requirements
 

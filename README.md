@@ -48,11 +48,11 @@ Detach with `Ctrl+b d`. Agents keep running in the background.
 ## Commands
 
 ```
-ae                     Start or reattach default session (git worktree)
+ae                     Start or reattach default session (local)
 ae <name>              Start or reattach a named session
-ae --worktree [name]   Start session with git worktree (default)
+ae --local [name]      Start session in current directory (default)
 ae --copy [name]       Start session with full copy (includes untracked files)
-ae --local [name]      Start session in current directory (no copy)
+ae --worktree [name]   Start session with git worktree (tracked files only)
 ae list                List all ae sessions
 ae end <name>          End session: commit, push to ae/<name> branch, clean up
 ae discard <name>      Discard session without saving (destroy worktree/copy)
@@ -80,9 +80,9 @@ Spawned agents are ephemeral -- they exist only while the tmux session is alive.
 
 | Mode | Flag | Description |
 |------|------|-------------|
-| **worktree** | `--worktree` | Git worktree (detached HEAD). Fast, shares `.git`, true isolation. Default. |
+| **local** | `--local` | Work directly in the current directory. No copy, no overhead. Default. |
 | **copy** | `--copy` | Full `cp -a` copy. Includes untracked files (node_modules, .venv, etc.). |
-| **local** | `--local` | Work directly in the current directory. No copy, no isolation. |
+| **worktree** | `--worktree` | Git worktree (detached HEAD). Fast, shares `.git`, tracked files only. |
 
 Worktree and copy sessions persist across reboots. Local sessions do not (nothing on disk to resume).
 
@@ -94,7 +94,7 @@ ae --local quick-fix      # no copy, just orchestrate agents here
 Set the default in config:
 ```toml
 [workspace]
-copy = local    # or "git" (default) or "full"
+copy = full    # or "local" (default) or "git"
 ```
 
 CLI flags always override the config.
@@ -125,7 +125,7 @@ Define any number of agents as aliases. The value is the full shell command to l
 | `main`    | Agent alias for the primary pane                           | `claude`   |
 | `workers` | Comma-separated aliases for agents launched at startup     | *(empty)*  |
 | `layout`  | `vertical` (side-by-side) or `horizontal` (stacked)        | `vertical` |
-| `copy`    | `git` (worktree), `full` (cp -a), or `local`              | `git`      |
+| `copy`    | `local`, `full` (cp -a), or `git` (worktree)              | `local`    |
 
 ### Examples
 
@@ -237,7 +237,7 @@ In worktree/copy mode, agents work on a separate directory. When done, `ae end` 
 ## Requirements
 
 - [tmux](https://github.com/tmux/tmux)
-- [git](https://git-scm.com/) (for default worktree mode; not needed with `--copy` or `--local`)
+- [git](https://git-scm.com/) (for worktree mode and `ae end` push; not needed with `--copy --local`)
 - At least one AI coding agent ([Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [OpenCode](https://github.com/opencode-ai/opencode), or any CLI tool)
 
 ## License

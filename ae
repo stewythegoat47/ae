@@ -442,17 +442,17 @@ cmd_help() {
     echo "ae - agentic engineering: tmux multi-agent workspace"
     echo ""
     echo "Usage:"
-    echo "  ae                     Start or reattach default session (git worktree)"
+    echo "  ae                     Start or reattach default session (local)"
     echo "  ae <name>              Start or reattach a named session"
-    echo "  ae --worktree [name]   Start session with git worktree (default)"
+    echo "  ae --local [name]      Start session in current directory (default)"
     echo "  ae --copy [name]       Start session with full copy (includes untracked files)"
-    echo "  ae --local [name]      Start session in current directory (no copy)"
+    echo "  ae --worktree [name]   Start session with git worktree (tracked files only)"
     echo "  ae list                List all ae sessions"
     echo "  ae end <name>          End a session: commit, push, clean up (or 'ae end all')"
     echo "  ae discard <name>      Discard a session without saving (or 'ae discard all')"
     echo "  ae help                Show this help"
     echo ""
-    echo "Modes: --worktree (default), --copy (full cp -a), --local (no copy)."
+    echo "Modes: --local (default), --copy (full cp -a), --worktree (git worktree)."
     echo "Worktree/copy sessions persist across reboots. Local sessions do not."
     echo ""
     echo "Config: ~/.ae/config"
@@ -503,12 +503,12 @@ MAIN_ALIAS="$(get_config workspace.main)"
 LAYOUT="$(get_config workspace.layout)"
 WORKERS_RAW="$(get_config workspace.workers)"
 
-# Determine copy mode: CLI flag > config > default (git)
+# Determine copy mode: CLI flag > config > default (local)
 if [[ -n "$COPY_MODE_OVERRIDE" ]]; then
     COPY_MODE="$COPY_MODE_OVERRIDE"
 else
     COPY_MODE="$(get_config workspace.copy)"
-    COPY_MODE="${COPY_MODE:-git}"
+    COPY_MODE="${COPY_MODE:-local}"
 fi
 
 if [[ "$COPY_MODE" != "git" ]] && [[ "$COPY_MODE" != "full" ]] && [[ "$COPY_MODE" != "local" ]]; then

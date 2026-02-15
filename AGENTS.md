@@ -30,7 +30,7 @@ CLAUDE.md — @AGENTS.md
 ## How it works
 
 1. Parses `~/.ae/config` for agent commands and layout
-2. Creates a git worktree (default) or full copy (`--full`) at `~/.ae/worktrees/<session>/`
+2. Creates a git worktree (default), full copy (`--copy`), or uses current dir (`--local`)
 3. Writes `.ae/workspace.md` so agents know about each other
 4. Launches agents with a prompt to read the manifest
 5. Attaches

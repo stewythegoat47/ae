@@ -49,33 +49,39 @@ Detach with `Ctrl+b d`. Agents keep running in the background.
 ## Commands
 
 ```
-ae                  Start or reattach default session (git worktree)
-ae <name>           Start or reattach a named session
-ae --full [name]    Start session with full copy (includes untracked files)
-ae --git [name]     Start session with git worktree (default)
-ae list             Show all ae sessions (with mode column)
-ae kill <name>      Kill a specific session
-ae kill all         Kill all ae sessions
-ae help             Show usage
+ae                     Start or reattach default session (git worktree)
+ae <name>              Start or reattach a named session
+ae --worktree [name]   Start session with git worktree (default)
+ae --copy [name]       Start session with full copy (includes untracked files)
+ae --local [name]      Start session in current directory (no copy)
+ae list                Show all ae sessions (with mode column)
+ae kill <name>         Kill a specific session
+ae kill all            Kill all ae sessions
+ae help                Show usage
 ```
 
-## Copy modes
+## Modes
 
-By default, `ae` creates a **git worktree** (detached HEAD) for each session. This is fast, shares `.git` with the original repo, and provides true file isolation.
+| Mode | Flag | Description |
+|------|------|-------------|
+| **worktree** | `--worktree` | Git worktree (detached HEAD). Fast, shares `.git`, true isolation. Default. |
+| **copy** | `--copy` | Full `cp -a` copy. Includes untracked files (node_modules, .venv, etc.). |
+| **local** | `--local` | Work directly in the current directory. No copy, no isolation. |
 
-Use `--full` when agents need untracked files like `node_modules/`, `.venv/`, or build artifacts:
+Worktree and copy sessions persist across reboots. Local sessions do not (nothing on disk to resume).
 
 ```bash
-ae --full my-rework
+ae --copy my-rework       # full copy for heavy dependency work
+ae --local quick-fix      # no copy, just orchestrate agents here
 ```
 
 Set the default in config:
 ```toml
 [workspace]
-copy = full    # or "git" (default)
+copy = local    # or "git" (default) or "full"
 ```
 
-CLI flags (`--full`, `--git`) always override the config.
+CLI flags always override the config.
 
 ## Config
 
@@ -104,7 +110,7 @@ Define any number of agents as aliases. The value is the full shell command to l
 | `main`    | Agent alias for the primary pane                      | `cc`       |
 | `workers` | Comma-separated agent aliases for additional panes    | `cx`       |
 | `layout`  | `vertical` (side-by-side) or `horizontal` (stacked)   | `vertical` |
-| `copy`    | `git` (worktree) or `full` (cp -a)                    | `git`      |
+| `copy`    | `git` (worktree), `full` (cp -a), or `local`          | `git`      |
 
 ### Examples
 
@@ -121,6 +127,11 @@ layout = horizontal
 Full copy mode by default:
 ```toml
 copy = full
+```
+
+Local mode (no copy):
+```toml
+copy = local
 ```
 
 ## How agents communicate
@@ -163,27 +174,28 @@ The human sees all panes and can type in any of them.
 - Multiple named sessions can run in the same directory
 - `ae <name>` from anywhere reattaches if the session exists
 - Sessions survive terminal close (tmux runs in background)
-- **Sessions survive reboot** -- the worktree persists on disk, run `ae <name>` again to resume agents with their previous conversation context
-- `ae list` shows running and stopped (resumable) sessions with their copy mode
-- `ae kill <name>` removes both the tmux session and the worktree
+- **Worktree/copy sessions survive reboot** -- the directory persists on disk, run `ae <name>` again to resume agents with their previous conversation context
+- Local sessions do not survive reboot (no separate directory to detect)
+- `ae list` shows running and stopped (resumable) sessions with their mode
+- `ae kill <name>` removes both the tmux session and associated resources
 
 ## How it works
 
 1. Validates `~/.ae/config`
-2. Creates a git worktree (default) or full copy at `~/.ae/worktrees/<session>/`
-3. Creates a tmux session with one pane per agent, all in the copy
+2. Creates a git worktree, full copy, or uses the current directory (local mode)
+3. Creates a tmux session with one pane per agent
 4. Writes a workspace manifest so agents know about each other
 5. Launches each agent with a prompt pointing to the manifest
 6. Attaches you to the session
 
-Agents work on the worktree, not the original. Push to remote and merge from there.
+In worktree/copy mode, agents work on a separate directory. Push to remote and merge from there. After a reboot, run `ae <name>` again to resume. In local mode, agents work directly on the original files.
 
-After a reboot, run `ae <name>` again -- it detects the existing worktree, recreates the tmux layout, and resumes each agent's previous conversation (Claude Code via `--continue`, Codex via `resume --last`). `ae kill` cleans up both the tmux session and the worktree.
+`ae kill` cleans up the tmux session and any associated worktree/copy.
 
 ## Requirements
 
 - [tmux](https://github.com/tmux/tmux)
-- [git](https://git-scm.com/) (for default worktree mode; not needed with `--full`)
+- [git](https://git-scm.com/) (for default worktree mode; not needed with `--copy` or `--local`)
 - At least one AI coding agent ([Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [OpenCode](https://github.com/opencode-ai/opencode), or any CLI tool)
 
 ## License

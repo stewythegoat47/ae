@@ -125,15 +125,32 @@ list_ae_sessions() {
     printf '%b' "$sessions"
 }
 
-# Clean up worktree for a session (mode-aware)
-cleanup_worktree() {
+# Clean up session resources (mode-aware)
+cleanup_session() {
     local session_name="$1"
     local wt="${WORKTREES_DIR}/${session_name}"
-    [[ -d "$wt" ]] || return 0
 
+    # Read mode and origin from tmux env (running sessions) then on-disk meta (stopped)
     local mode origin
-    mode="$(read_session_meta "$session_name" mode)"
-    origin="$(read_session_meta "$session_name" origin)"
+    mode="$(tmux show-environment -t "$session_name" AE_MODE 2>/dev/null | sed 's/^AE_MODE=//' || true)"
+    origin="$(tmux show-environment -t "$session_name" AE_ORIGIN 2>/dev/null | sed 's/^AE_ORIGIN=//' || true)"
+    if [[ -z "$mode" ]]; then
+        mode="$(read_session_meta "$session_name" mode)"
+    fi
+    if [[ -z "$origin" ]]; then
+        origin="$(read_session_meta "$session_name" origin)"
+    fi
+
+    if [[ "$mode" == "local" ]]; then
+        # Local: only remove session metadata dir (derived from origin), never the project
+        if [[ -n "$origin" ]] && [[ -d "${origin}/.ae/${session_name}" ]]; then
+            rm -rf "${origin}/.ae/${session_name}"
+        fi
+        echo "Cleaned up local session $session_name"
+        return 0
+    fi
+
+    [[ -d "$wt" ]] || return 0
 
     if [[ "$mode" == "git" ]] && [[ -n "$origin" ]]; then
         git -C "$origin" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"
@@ -157,7 +174,8 @@ case "${1:-}" in
                 [[ -z "$name" ]] && continue
                 pane_count="$(tmux list-panes -t "$name" 2>/dev/null | wc -l)"
                 origin="$(tmux show-environment -t "$name" AE_ORIGIN 2>/dev/null | sed 's/^AE_ORIGIN=//' || echo "?")"
-                mode="$(read_session_meta "$name" mode)"
+                mode="$(tmux show-environment -t "$name" AE_MODE 2>/dev/null | sed 's/^AE_MODE=//' || true)"
+                mode="${mode:-$(read_session_meta "$name" mode)}"
                 mode="${mode:-?}"
                 printf '%-40s  %-10s  %-6s  %-5s  %s\n' "$name" "running" "$pane_count" "$mode" "$origin"
             done <<< "$sessions"
@@ -200,7 +218,7 @@ case "${1:-}" in
                 while IFS= read -r s; do
                     [[ -z "$s" ]] && continue
                     found=true
-                    cleanup_worktree "$s"
+                    cleanup_session "$s"
                     tmux kill-session -t "$s"
                     echo "Killed $s"
                 done <<< "$sessions"
@@ -211,7 +229,7 @@ case "${1:-}" in
                     [[ -d "$wt" ]] || continue
                     found=true
                     name="$(basename "$wt")"
-                    cleanup_worktree "$name"
+                    cleanup_session "$name"
                     echo "Removed stopped session $name"
                 done
             fi
@@ -220,12 +238,12 @@ case "${1:-}" in
             fi
         else
             if tmux has-session -t "$target" 2>/dev/null; then
-                cleanup_worktree "$target"
+                cleanup_session "$target"
                 tmux kill-session -t "$target"
                 echo "Killed $target"
             elif [[ ! "$target" =~ [/] ]] && [[ -d "${WORKTREES_DIR}/${target}" ]]; then
                 # Stopped session — clean up worktree
-                cleanup_worktree "$target"
+                cleanup_session "$target"
                 echo "Removed stopped session $target"
             else
                 echo "Session '$target' not found." >&2
@@ -238,17 +256,17 @@ case "${1:-}" in
         echo "ae - agentic engineering: tmux multi-agent workspace"
         echo ""
         echo "Usage:"
-        echo "  ae                  Start or reattach default session (git worktree)"
-        echo "  ae <name>           Start or reattach a named session"
-        echo "  ae --full [name]    Start session with full copy (includes untracked files)"
-        echo "  ae --git [name]     Start session with git worktree (default)"
-        echo "  ae list             List all ae sessions"
-        echo "  ae kill <name>      Kill a session (or 'ae kill all')"
-        echo "  ae help             Show this help"
+        echo "  ae                     Start or reattach default session (git worktree)"
+        echo "  ae <name>              Start or reattach a named session"
+        echo "  ae --worktree [name]   Start session with git worktree (default)"
+        echo "  ae --copy [name]       Start session with full copy (includes untracked files)"
+        echo "  ae --local [name]      Start session in current directory (no copy)"
+        echo "  ae list                List all ae sessions"
+        echo "  ae kill <name>         Kill a session (or 'ae kill all')"
+        echo "  ae help                Show this help"
         echo ""
-        echo "Default mode is git worktree (clean checkout from HEAD)."
-        echo "Use --full when you need untracked files (node_modules, .venv, etc.)."
-        echo "Sessions persist across reboots -- just run 'ae <name>' again to resume."
+        echo "Modes: --worktree (default), --copy (full cp -a), --local (no copy)."
+        echo "Worktree/copy sessions persist across reboots. Local sessions do not."
         echo "Push to remote and merge from there."
         echo ""
         echo "Config: ~/.ae/config"
@@ -261,9 +279,10 @@ COPY_MODE_OVERRIDE=""
 SESSION=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --full) COPY_MODE_OVERRIDE="full"; shift ;;
-        --git)  COPY_MODE_OVERRIDE="git"; shift ;;
-        --*)    echo "Error: unknown flag '$1'. Use --full or --git." >&2; exit 1 ;;
+        --worktree) COPY_MODE_OVERRIDE="git"; shift ;;
+        --copy)     COPY_MODE_OVERRIDE="full"; shift ;;
+        --local)    COPY_MODE_OVERRIDE="local"; shift ;;
+        --*)    echo "Error: unknown flag '$1'. Use --worktree, --copy, or --local." >&2; exit 1 ;;
         *)      SESSION="$1"; shift ;;
     esac
 done
@@ -296,8 +315,8 @@ else
     COPY_MODE="${COPY_MODE:-git}"
 fi
 
-if [[ "$COPY_MODE" != "git" ]] && [[ "$COPY_MODE" != "full" ]]; then
-    echo "Error: invalid copy mode '${COPY_MODE}'. Use 'git' or 'full'." >&2
+if [[ "$COPY_MODE" != "git" ]] && [[ "$COPY_MODE" != "full" ]] && [[ "$COPY_MODE" != "local" ]]; then
+    echo "Error: invalid copy mode '${COPY_MODE}'. Use 'git', 'full', or 'local'." >&2
     exit 1
 fi
 
@@ -328,12 +347,20 @@ if [[ -n "$WORKERS_RAW" ]]; then
     done
 fi
 
-# --- Worktree: resume existing or create new ---
+# --- Working directory: local, resume existing, or create new ---
 ORIGIN_DIR="$PWD"
 WORK_DIR="${WORKTREES_DIR}/${SESSION}"
 RESUMING=false
 
-if [[ -d "$WORK_DIR" ]]; then
+if [[ "$COPY_MODE" == "local" ]]; then
+    # Local mode: work directly in current directory, no copy
+    # Mode collision: error if a stopped worktree/copy session exists with the same name
+    if [[ -d "${WORKTREES_DIR}/${SESSION}" ]]; then
+        echo "Error: stopped session '${SESSION}' exists as worktree/copy. Kill it first or use a different name." >&2
+        exit 1
+    fi
+    WORK_DIR="$PWD"
+elif [[ -d "$WORK_DIR" ]]; then
     # Existing worktree — resume it (e.g. after reboot)
     RESUMING=true
     echo "Resuming session ${SESSION}..."
@@ -369,10 +396,11 @@ tmux new-session -d -s "$SESSION" -c "$WORK_DIR"
 tmux set-environment -t "$SESSION" -u CLAUDECODE
 tmux set-environment -t "$SESSION" -u CLAUDE_CODE_SESSION
 
-# Tag as ae session and store directories
+# Tag as ae session and store directories/mode
 tmux set-environment -t "$SESSION" AE_SESSION 1
 tmux set-environment -t "$SESSION" AE_ORIGIN "$ORIGIN_DIR"
 tmux set-environment -t "$SESSION" AE_DIR "$WORK_DIR"
+tmux set-environment -t "$SESSION" AE_MODE "$COPY_MODE"
 
 # ae-specific tmux options (session-scoped, doesn't affect other tmux usage)
 tmux set-option -t "$SESSION" mouse on
@@ -471,11 +499,11 @@ for i in "${!ALL_ALIASES[@]}"; do
 done
 
 # Describe copy mode in manifest
-if [[ "$COPY_MODE" == "git" ]]; then
-    COPY_DESC="You are working on a git worktree (detached HEAD from the origin). Push to remote and merge from there."
-else
-    COPY_DESC="You are working on a full copy of the project. Push to remote and merge from there."
-fi
+case "$COPY_MODE" in
+    git)   COPY_DESC="You are working on a git worktree (detached HEAD from the origin). Push to remote and merge from there." ;;
+    full)  COPY_DESC="You are working on a full copy of the project. Push to remote and merge from there." ;;
+    local) COPY_DESC="You are working directly in the project directory (local mode). Changes affect the original files immediately." ;;
+esac
 
 cat > "$MANIFEST" <<EOF
 # ae workspace
@@ -486,7 +514,6 @@ Directory: ${WORK_DIR}
 Mode: ${COPY_MODE}
 
 ${COPY_DESC}
-Do not modify the origin directory directly.
 
 ## Agents
 
@@ -510,7 +537,6 @@ tmux capture-pane -t "<tmux target>" -p | tail -20
 - Coordinate file edits -- don't modify the same file simultaneously
 - The human can see all panes and may intervene at any time
 - Always use the send helper above to communicate with other agents (never raw tmux send-keys)
-- Push changes to remote -- do not modify the origin directory directly
 EOF
 
 # --- Launch agents ---

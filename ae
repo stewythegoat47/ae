@@ -7,6 +7,15 @@ CONFIG_FILE="${CONFIG_DIR}/config"
 WORKTREES_DIR="${CONFIG_DIR}/worktrees"
 SESSIONS_DIR="${CONFIG_DIR}/sessions"
 
+# --- Function index ---
+#   Config:     parse_config, get_config
+#   Helpers:    tool_name_from_cmd, resume_cmd_from_cmd, default_session_name, tmux_attach
+#   Session:    read_session_meta, list_ae_sessions, iter_stopped_sessions, cleanup_session
+#   End/branch: sanitize_branch_name, resolve_session_workdir, end_session
+#   Commands:   cmd_list, cmd_end, cmd_discard, cmd_help
+#   Manifest:   regenerate_manifest
+#   Launch:     send_agent_cmd
+
 DEFAULT_CONFIG='[agents]
 claude = "claude --permission-mode bypassPermissions --model claude-opus-4-6"
 codex = "codex --yolo -m gpt-5.3-codex -c model_reasoning_effort=high"
@@ -127,6 +136,23 @@ list_ae_sessions() {
         fi
     done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
     printf '%b' "$sessions"
+}
+
+# Iterate stopped sessions (on disk but not running), de-duplicated across SESSIONS_DIR and WORKTREES_DIR
+iter_stopped_sessions() {
+    declare -A _seen=()
+    for dir in "$SESSIONS_DIR" "$WORKTREES_DIR"; do
+        [[ -d "$dir" ]] || continue
+        for entry in "$dir"/*/; do
+            [[ -d "$entry" ]] || continue
+            local name
+            name="$(basename "$entry")"
+            [[ -n "${_seen[$name]:-}" ]] && continue
+            tmux has-session -t "$name" 2>/dev/null && continue
+            _seen[$name]=1
+            echo "$name"
+        done
+    done
 }
 
 # Clean up session resources (mode-aware)
@@ -289,189 +315,159 @@ end_session() {
 }
 
 # --- Subcommands ---
-case "${1:-}" in
-    list|ls)
-        # Show running sessions
-        sessions="$(list_ae_sessions)"
-        has_output=false
-        if [[ -n "$sessions" ]]; then
-            has_output=true
+
+cmd_list() {
+    local sessions has_output=false
+    sessions="$(list_ae_sessions)"
+    if [[ -n "$sessions" ]]; then
+        has_output=true
+        printf '%-40s  %-10s  %-6s  %-5s  %s\n' "SESSION" "STATUS" "PANES" "MODE" "ORIGIN"
+        while IFS= read -r name; do
+            [[ -z "$name" ]] && continue
+            local pane_count origin mode
+            pane_count="$(tmux list-panes -t "$name" 2>/dev/null | wc -l)"
+            origin="$(tmux show-environment -t "$name" AE_ORIGIN 2>/dev/null | sed 's/^AE_ORIGIN=//' || echo "?")"
+            mode="$(tmux show-environment -t "$name" AE_MODE 2>/dev/null | sed 's/^AE_MODE=//' || true)"
+            mode="${mode:-$(read_session_meta "$name" mode)}"
+            mode="${mode:-?}"
+            printf '%-40s  %-10s  %-6s  %-5s  %s\n' "$name" "running" "$pane_count" "$mode" "$origin"
+        done <<< "$sessions"
+    fi
+    while IFS= read -r name; do
+        if [[ "$has_output" == false ]]; then
             printf '%-40s  %-10s  %-6s  %-5s  %s\n' "SESSION" "STATUS" "PANES" "MODE" "ORIGIN"
-            while IFS= read -r name; do
-                [[ -z "$name" ]] && continue
-                pane_count="$(tmux list-panes -t "$name" 2>/dev/null | wc -l)"
-                origin="$(tmux show-environment -t "$name" AE_ORIGIN 2>/dev/null | sed 's/^AE_ORIGIN=//' || echo "?")"
-                mode="$(tmux show-environment -t "$name" AE_MODE 2>/dev/null | sed 's/^AE_MODE=//' || true)"
-                mode="${mode:-$(read_session_meta "$name" mode)}"
-                mode="${mode:-?}"
-                printf '%-40s  %-10s  %-6s  %-5s  %s\n' "$name" "running" "$pane_count" "$mode" "$origin"
+            has_output=true
+        fi
+        local mode origin
+        mode="$(read_session_meta "$name" mode)"
+        mode="${mode:-?}"
+        origin="$(read_session_meta "$name" origin)"
+        origin="${origin:--}"
+        printf '%-40s  %-10s  %-6s  %-5s  %s\n' "$name" "stopped" "-" "$mode" "$origin"
+    done < <(iter_stopped_sessions)
+    if [[ "$has_output" == false ]]; then
+        echo "No ae sessions."
+    fi
+}
+
+cmd_end() {
+    local target="${1:-}"
+    if [[ -z "$target" ]]; then
+        echo "Usage: ae end <session-name>" >&2
+        echo "       ae end all" >&2
+        return 1
+    fi
+    if [[ "$target" == "all" ]]; then
+        local found=false failures=0
+        local sessions
+        sessions="$(list_ae_sessions)"
+        if [[ -n "$sessions" ]]; then
+            while IFS= read -r s; do
+                [[ -z "$s" ]] && continue
+                found=true
+                end_session "$s" || failures=$(( failures + 1 ))
             done <<< "$sessions"
         fi
-        # Show stopped sessions (exist in SESSIONS_DIR or WORKTREES_DIR but no tmux session)
-        declare -A _listed=()
-        for dir in "$SESSIONS_DIR" "$WORKTREES_DIR"; do
-            [[ -d "$dir" ]] || continue
-            for entry in "$dir"/*/; do
-                [[ -d "$entry" ]] || continue
-                name="$(basename "$entry")"
-                [[ -n "${_listed[$name]:-}" ]] && continue
-                if ! tmux has-session -t "$name" 2>/dev/null; then
-                    if [[ "$has_output" == false ]]; then
-                        printf '%-40s  %-10s  %-6s  %-5s  %s\n' "SESSION" "STATUS" "PANES" "MODE" "ORIGIN"
-                        has_output=true
-                    fi
-                    _listed[$name]=1
-                    mode="$(read_session_meta "$name" mode)"
-                    mode="${mode:-?}"
-                    origin="$(read_session_meta "$name" origin)"
-                    origin="${origin:--}"
-                    printf '%-40s  %-10s  %-6s  %-5s  %s\n' "$name" "stopped" "-" "$mode" "$origin"
-                fi
-            done
-        done
-        if [[ "$has_output" == false ]]; then
+        while IFS= read -r name; do
+            found=true
+            end_session "$name" || failures=$(( failures + 1 ))
+        done < <(iter_stopped_sessions)
+        if [[ "$found" == false ]]; then
+            echo "No ae sessions."
+        elif (( failures > 0 )); then
+            echo "${failures} session(s) failed to end. See errors above." >&2
+            return 1
+        fi
+    else
+        if tmux has-session -t "$target" 2>/dev/null; then
+            end_session "$target" || return 1
+        elif [[ ! "$target" =~ [/] ]] && [[ -d "${SESSIONS_DIR}/${target}" ]]; then
+            end_session "$target" || return 1
+        elif [[ ! "$target" =~ [/] ]] && [[ -d "${WORKTREES_DIR}/${target}" ]]; then
+            end_session "$target" || return 1
+        else
+            echo "Session '$target' not found." >&2
+            return 1
+        fi
+    fi
+}
+
+cmd_discard() {
+    local target="${1:-}"
+    if [[ -z "$target" ]]; then
+        echo "Usage: ae discard <session-name>" >&2
+        echo "       ae discard all" >&2
+        return 1
+    fi
+    if [[ "$target" == "all" ]]; then
+        local found=false
+        local sessions
+        sessions="$(list_ae_sessions)"
+        if [[ -n "$sessions" ]]; then
+            while IFS= read -r s; do
+                [[ -z "$s" ]] && continue
+                found=true
+                cleanup_session "$s"
+                tmux kill-session -t "$s"
+                echo "Discarded $s"
+            done <<< "$sessions"
+        fi
+        while IFS= read -r name; do
+            found=true
+            cleanup_session "$name"
+            echo "Discarded stopped session $name"
+        done < <(iter_stopped_sessions)
+        if [[ "$found" == false ]]; then
             echo "No ae sessions."
         fi
-        exit 0
-        ;;
-    end)
-        target="${2:-}"
-        if [[ -z "$target" ]]; then
-            echo "Usage: ae end <session-name>" >&2
-            echo "       ae end all" >&2
-            exit 1
-        fi
-        if [[ "$target" == "all" ]]; then
-            found=false
-            failures=0
-            # End running sessions
-            sessions="$(list_ae_sessions)"
-            if [[ -n "$sessions" ]]; then
-                while IFS= read -r s; do
-                    [[ -z "$s" ]] && continue
-                    found=true
-                    end_session "$s" || failures=$(( failures + 1 ))
-                done <<< "$sessions"
-            fi
-            # End stopped sessions (from SESSIONS_DIR and WORKTREES_DIR, de-duped)
-            declare -A _ended=()
-            for dir in "$SESSIONS_DIR" "$WORKTREES_DIR"; do
-                [[ -d "$dir" ]] || continue
-                for entry in "$dir"/*/; do
-                    [[ -d "$entry" ]] || continue
-                    name="$(basename "$entry")"
-                    [[ -n "${_ended[$name]:-}" ]] && continue
-                    tmux has-session -t "$name" 2>/dev/null && continue
-                    found=true
-                    _ended[$name]=1
-                    end_session "$name" || failures=$(( failures + 1 ))
-                done
-            done
-            if [[ "$found" == false ]]; then
-                echo "No ae sessions."
-            elif (( failures > 0 )); then
-                echo "${failures} session(s) failed to end. See errors above." >&2
-                exit 1
-            fi
+    else
+        if tmux has-session -t "$target" 2>/dev/null; then
+            cleanup_session "$target"
+            tmux kill-session -t "$target"
+            echo "Discarded $target"
+        elif [[ ! "$target" =~ [/] ]] && [[ -d "${SESSIONS_DIR}/${target}" ]]; then
+            cleanup_session "$target"
+            echo "Discarded stopped session $target"
+        elif [[ ! "$target" =~ [/] ]] && [[ -d "${WORKTREES_DIR}/${target}" ]]; then
+            cleanup_session "$target"
+            echo "Discarded stopped session $target"
         else
-            if tmux has-session -t "$target" 2>/dev/null; then
-                end_session "$target" || exit 1
-            elif [[ ! "$target" =~ [/] ]] && [[ -d "${SESSIONS_DIR}/${target}" ]]; then
-                end_session "$target" || exit 1
-            elif [[ ! "$target" =~ [/] ]] && [[ -d "${WORKTREES_DIR}/${target}" ]]; then
-                end_session "$target" || exit 1
-            else
-                echo "Session '$target' not found." >&2
-                exit 1
-            fi
+            echo "Session '$target' not found." >&2
+            return 1
         fi
-        exit 0
-        ;;
-    discard)
-        target="${2:-}"
-        if [[ -z "$target" ]]; then
-            echo "Usage: ae discard <session-name>" >&2
-            echo "       ae discard all" >&2
-            exit 1
-        fi
-        if [[ "$target" == "all" ]]; then
-            found=false
-            sessions="$(list_ae_sessions)"
-            if [[ -n "$sessions" ]]; then
-                while IFS= read -r s; do
-                    [[ -z "$s" ]] && continue
-                    found=true
-                    cleanup_session "$s"
-                    tmux kill-session -t "$s"
-                    echo "Discarded $s"
-                done <<< "$sessions"
-            fi
-            declare -A _discarded=()
-            for dir in "$SESSIONS_DIR" "$WORKTREES_DIR"; do
-                [[ -d "$dir" ]] || continue
-                for entry in "$dir"/*/; do
-                    [[ -d "$entry" ]] || continue
-                    name="$(basename "$entry")"
-                    [[ -n "${_discarded[$name]:-}" ]] && continue
-                    tmux has-session -t "$name" 2>/dev/null && continue
-                    found=true
-                    _discarded[$name]=1
-                    cleanup_session "$name"
-                    echo "Discarded stopped session $name"
-                done
-            done
-            if [[ "$found" == false ]]; then
-                echo "No ae sessions."
-            fi
-        else
-            if tmux has-session -t "$target" 2>/dev/null; then
-                cleanup_session "$target"
-                tmux kill-session -t "$target"
-                echo "Discarded $target"
-            elif [[ ! "$target" =~ [/] ]] && [[ -d "${SESSIONS_DIR}/${target}" ]]; then
-                cleanup_session "$target"
-                echo "Discarded stopped session $target"
-            elif [[ ! "$target" =~ [/] ]] && [[ -d "${WORKTREES_DIR}/${target}" ]]; then
-                cleanup_session "$target"
-                echo "Discarded stopped session $target"
-            else
-                echo "Session '$target' not found." >&2
-                exit 1
-            fi
-        fi
-        exit 0
-        ;;
+    fi
+}
+
+cmd_help() {
+    echo "ae - agentic engineering: tmux multi-agent workspace"
+    echo ""
+    echo "Usage:"
+    echo "  ae                     Start or reattach default session (git worktree)"
+    echo "  ae <name>              Start or reattach a named session"
+    echo "  ae --worktree [name]   Start session with git worktree (default)"
+    echo "  ae --copy [name]       Start session with full copy (includes untracked files)"
+    echo "  ae --local [name]      Start session in current directory (no copy)"
+    echo "  ae list                List all ae sessions"
+    echo "  ae end <name>          End a session: commit, push, clean up (or 'ae end all')"
+    echo "  ae discard <name>      Discard a session without saving (or 'ae discard all')"
+    echo "  ae help                Show this help"
+    echo ""
+    echo "Modes: --worktree (default), --copy (full cp -a), --local (no copy)."
+    echo "Worktree/copy sessions persist across reboots. Local sessions do not."
+    echo ""
+    echo "Config: ~/.ae/config"
+}
+
+# --- Dispatcher ---
+case "${1:-}" in
+    list|ls)        cmd_list; exit 0 ;;
+    end)            cmd_end "${2:-}"; exit $? ;;
+    discard)        cmd_discard "${2:-}"; exit $? ;;
     kill|rm)
         echo "Warning: 'ae kill' is deprecated, use 'ae end' (preserve work) or 'ae discard' (destroy)." >&2
-        # Forward to discard behavior
-        target="${2:-}"
-        if [[ -z "$target" ]]; then
-            echo "Usage: ae discard <session-name>" >&2
-            echo "       ae discard all" >&2
-            exit 1
-        fi
-        exec "$0" discard "$target"
+        exec "$0" discard "${2:-}"
         ;;
-    help|-h|--help)
-        echo "ae - agentic engineering: tmux multi-agent workspace"
-        echo ""
-        echo "Usage:"
-        echo "  ae                     Start or reattach default session (git worktree)"
-        echo "  ae <name>              Start or reattach a named session"
-        echo "  ae --worktree [name]   Start session with git worktree (default)"
-        echo "  ae --copy [name]       Start session with full copy (includes untracked files)"
-        echo "  ae --local [name]      Start session in current directory (no copy)"
-        echo "  ae list                List all ae sessions"
-        echo "  ae end <name>          End a session: commit, push, clean up (or 'ae end all')"
-        echo "  ae discard <name>      Discard a session without saving (or 'ae discard all')"
-        echo "  ae help                Show this help"
-        echo ""
-        echo "Modes: --worktree (default), --copy (full cp -a), --local (no copy)."
-        echo "Worktree/copy sessions persist across reboots. Local sessions do not."
-        echo ""
-        echo "Config: ~/.ae/config"
-        exit 0
-        ;;
+    help|-h|--help) cmd_help; exit 0 ;;
 esac
 
 # --- Parse flags ---

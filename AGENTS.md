@@ -14,7 +14,7 @@ Single bash script. No dependencies beyond bash and tmux. Keep it that way.
 - `ae` must remain a single bash script. No compiled languages, no runtimes.
 - Config is INI-style with a simple regex parser. Don't add TOML/YAML/JSON parsing.
 - No dependencies beyond bash >= 4.0, tmux, and git.
-- `.ae/` in project dirs is session-local state -- always gitignored.
+- Session state lives in `~/.ae/sessions/`. Working directories stay clean.
 - No AI tool attribution in commits.
 
 ## Structure

@@ -64,8 +64,8 @@ ae help                Show usage
 By default, `ae` starts with just the main agent. Spawn more on demand:
 
 ```bash
-.ae/<session>/spawn codex                          # spawn with default prompt
-.ae/<session>/spawn codex "Review changes in src/"  # spawn with custom prompt
+~/.ae/sessions/<session>/spawn codex                          # spawn with default prompt
+~/.ae/sessions/<session>/spawn codex "Review changes in src/"  # spawn with custom prompt
 ```
 
 The spawn helper:
@@ -141,7 +141,7 @@ layout = horizontal
 
 ## How agents communicate
 
-On session creation, `ae` writes `.ae/<session>/workspace.md`:
+On session creation, `ae` writes `~/.ae/sessions/<session>/workspace.md`:
 
 ```markdown
 # ae workspace
@@ -160,19 +160,21 @@ Mode: git
 ## Spawn
 
 Add another agent to this workspace:
-.ae/<session>/spawn <alias> [prompt]
+~/.ae/sessions/<session>/spawn <alias> [prompt]
 ```
+
+Session state (helpers, manifest, metadata) lives in `~/.ae/sessions/` — working directories stay clean.
 
 Each agent starts with a prompt to read this file. From there, any agent can:
 
 **Send a message to another agent:**
 ```bash
-.ae/<session>/send "%1" "Review the changes in src/auth.ts"
+~/.ae/sessions/<session>/send "%1" "Review the changes in src/auth.ts"
 ```
 
 **Spawn another agent:**
 ```bash
-.ae/<session>/spawn codex "Review these changes"
+~/.ae/sessions/<session>/spawn codex "Review these changes"
 ```
 
 **Check what another agent is doing:**
@@ -226,7 +228,7 @@ ae discard all
 1. Validates `~/.ae/config`
 2. Creates a git worktree, full copy, or uses the current directory (local mode)
 3. Creates a tmux session with the main agent (+ workers if configured)
-4. Generates helper scripts (`send`, `spawn`) and workspace manifest
+4. Generates helper scripts and workspace manifest in `~/.ae/sessions/`
 5. Launches agents with a prompt pointing to the manifest
 6. Attaches you to the session
 

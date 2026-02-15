@@ -5,6 +5,7 @@ set -euo pipefail
 CONFIG_DIR="${HOME}/.ae"
 CONFIG_FILE="${CONFIG_DIR}/config"
 WORKTREES_DIR="${CONFIG_DIR}/worktrees"
+SESSIONS_DIR="${CONFIG_DIR}/sessions"
 
 DEFAULT_CONFIG='[agents]
 claude = "claude --permission-mode bypassPermissions --model claude-opus-4-6"
@@ -101,7 +102,11 @@ tmux_attach() {
 # Read a session's metadata file (mode, origin)
 read_session_meta() {
     local session_name="$1" key="$2"
-    local meta="${WORKTREES_DIR}/${session_name}/.ae/${session_name}/meta"
+    local meta="${SESSIONS_DIR}/${session_name}/meta"
+    # Backward compat: try old worktree-nested path
+    if [[ ! -f "$meta" ]]; then
+        meta="${WORKTREES_DIR}/${session_name}/.ae/${session_name}/meta"
+    fi
     if [[ -f "$meta" ]]; then
         while IFS='=' read -r k v; do
             if [[ "$k" == "$key" ]]; then
@@ -140,11 +145,15 @@ cleanup_session() {
         origin="$(read_session_meta "$session_name" origin)"
     fi
 
+    # Always clean session state from SESSIONS_DIR
+    rm -rf "${SESSIONS_DIR}/${session_name}"
+    # Legacy cleanup: old worktree-nested and local-mode paths
+    rm -rf "${WORKTREES_DIR}/${session_name}/.ae/${session_name}" 2>/dev/null || true
+    if [[ -n "$origin" ]] && [[ -d "${origin}/.ae/${session_name}" ]]; then
+        rm -rf "${origin}/.ae/${session_name}"
+    fi
+
     if [[ "$mode" == "local" ]]; then
-        # Local: only remove session metadata dir (derived from origin), never the project
-        if [[ -n "$origin" ]] && [[ -d "${origin}/.ae/${session_name}" ]]; then
-            rm -rf "${origin}/.ae/${session_name}"
-        fi
         echo "Cleaned up local session $session_name"
         return 0
     fi
@@ -298,16 +307,20 @@ case "${1:-}" in
                 printf '%-40s  %-10s  %-6s  %-5s  %s\n' "$name" "running" "$pane_count" "$mode" "$origin"
             done <<< "$sessions"
         fi
-        # Show resumable worktrees (exist on disk but no tmux session)
-        if [[ -d "$WORKTREES_DIR" ]]; then
-            for wt in "$WORKTREES_DIR"/*/; do
-                [[ -d "$wt" ]] || continue
-                name="$(basename "$wt")"
+        # Show stopped sessions (exist in SESSIONS_DIR or WORKTREES_DIR but no tmux session)
+        declare -A _listed=()
+        for dir in "$SESSIONS_DIR" "$WORKTREES_DIR"; do
+            [[ -d "$dir" ]] || continue
+            for entry in "$dir"/*/; do
+                [[ -d "$entry" ]] || continue
+                name="$(basename "$entry")"
+                [[ -n "${_listed[$name]:-}" ]] && continue
                 if ! tmux has-session -t "$name" 2>/dev/null; then
                     if [[ "$has_output" == false ]]; then
                         printf '%-40s  %-10s  %-6s  %-5s  %s\n' "SESSION" "STATUS" "PANES" "MODE" "ORIGIN"
                         has_output=true
                     fi
+                    _listed[$name]=1
                     mode="$(read_session_meta "$name" mode)"
                     mode="${mode:-?}"
                     origin="$(read_session_meta "$name" origin)"
@@ -315,7 +328,7 @@ case "${1:-}" in
                     printf '%-40s  %-10s  %-6s  %-5s  %s\n' "$name" "stopped" "-" "$mode" "$origin"
                 fi
             done
-        fi
+        done
         if [[ "$has_output" == false ]]; then
             echo "No ae sessions."
         fi
@@ -340,17 +353,20 @@ case "${1:-}" in
                     end_session "$s" || failures=$(( failures + 1 ))
                 done <<< "$sessions"
             fi
-            # End stopped worktrees
-            if [[ -d "$WORKTREES_DIR" ]]; then
-                for wt in "$WORKTREES_DIR"/*/; do
-                    [[ -d "$wt" ]] || continue
-                    found=true
-                    name="$(basename "$wt")"
-                    # Skip if already handled as running session
+            # End stopped sessions (from SESSIONS_DIR and WORKTREES_DIR, de-duped)
+            declare -A _ended=()
+            for dir in "$SESSIONS_DIR" "$WORKTREES_DIR"; do
+                [[ -d "$dir" ]] || continue
+                for entry in "$dir"/*/; do
+                    [[ -d "$entry" ]] || continue
+                    name="$(basename "$entry")"
+                    [[ -n "${_ended[$name]:-}" ]] && continue
                     tmux has-session -t "$name" 2>/dev/null && continue
+                    found=true
+                    _ended[$name]=1
                     end_session "$name" || failures=$(( failures + 1 ))
                 done
-            fi
+            done
             if [[ "$found" == false ]]; then
                 echo "No ae sessions."
             elif (( failures > 0 )); then
@@ -359,6 +375,8 @@ case "${1:-}" in
             fi
         else
             if tmux has-session -t "$target" 2>/dev/null; then
+                end_session "$target" || exit 1
+            elif [[ ! "$target" =~ [/] ]] && [[ -d "${SESSIONS_DIR}/${target}" ]]; then
                 end_session "$target" || exit 1
             elif [[ ! "$target" =~ [/] ]] && [[ -d "${WORKTREES_DIR}/${target}" ]]; then
                 end_session "$target" || exit 1
@@ -388,15 +406,20 @@ case "${1:-}" in
                     echo "Discarded $s"
                 done <<< "$sessions"
             fi
-            if [[ -d "$WORKTREES_DIR" ]]; then
-                for wt in "$WORKTREES_DIR"/*/; do
-                    [[ -d "$wt" ]] || continue
+            declare -A _discarded=()
+            for dir in "$SESSIONS_DIR" "$WORKTREES_DIR"; do
+                [[ -d "$dir" ]] || continue
+                for entry in "$dir"/*/; do
+                    [[ -d "$entry" ]] || continue
+                    name="$(basename "$entry")"
+                    [[ -n "${_discarded[$name]:-}" ]] && continue
+                    tmux has-session -t "$name" 2>/dev/null && continue
                     found=true
-                    name="$(basename "$wt")"
+                    _discarded[$name]=1
                     cleanup_session "$name"
                     echo "Discarded stopped session $name"
                 done
-            fi
+            done
             if [[ "$found" == false ]]; then
                 echo "No ae sessions."
             fi
@@ -405,6 +428,9 @@ case "${1:-}" in
                 cleanup_session "$target"
                 tmux kill-session -t "$target"
                 echo "Discarded $target"
+            elif [[ ! "$target" =~ [/] ]] && [[ -d "${SESSIONS_DIR}/${target}" ]]; then
+                cleanup_session "$target"
+                echo "Discarded stopped session $target"
             elif [[ ! "$target" =~ [/] ]] && [[ -d "${WORKTREES_DIR}/${target}" ]]; then
                 cleanup_session "$target"
                 echo "Discarded stopped session $target"
@@ -615,14 +641,15 @@ for i in "${!WORKER_ALIASES[@]}"; do
 done
 
 # --- Generate helper scripts and workspace manifest ---
-AE_META="${WORK_DIR}/.ae/${SESSION}"
-mkdir -p "$AE_META"
+AE_META="${SESSIONS_DIR}/${SESSION}"
+mkdir -p -m 0700 "$AE_META"
 
 # Session metadata (used by ae list/kill for stopped sessions, and by spawn helper)
 # Always write full meta: on resume, preserve original mode/origin from existing file
 META_MODE="$COPY_MODE"
 META_ORIGIN="$ORIGIN_DIR"
-if [[ "$RESUMING" == true ]] && [[ -f "${AE_META}/meta" ]]; then
+if [[ "$RESUMING" == true ]]; then
+    # read_session_meta checks new path then falls back to legacy path
     META_MODE="$(read_session_meta "$SESSION" mode)"
     META_ORIGIN="$(read_session_meta "$SESSION" origin)"
     META_MODE="${META_MODE:-$COPY_MODE}"
@@ -638,11 +665,11 @@ config=${CONFIG_FILE}
 main_pane=${PANE_IDS[0]}
 EOF
 
-# Helper: .ae/send <target> <message> — focuses pane, pastes text, submits
+# Helper: send <target> <message> — focuses pane, pastes text, submits
 cat > "${AE_META}/send" <<'SENDEOF'
 #!/usr/bin/env bash
 if [[ $# -lt 2 ]]; then
-    echo "Usage: .ae/send <tmux-target> <message>" >&2
+    echo "Usage: send <tmux-target> <message>" >&2
     exit 1
 fi
 target="$1"; shift
@@ -668,13 +695,13 @@ tmux paste-buffer -d -b "$buf" -t "$target"
 sleep 0.1
 tmux send-keys -t "$target" Enter
 SENDEOF
-chmod +x "${AE_META}/send"
+chmod 0700 "${AE_META}/send"
 
 # Regenerate workspace.md from live tmux pane state
 # Scans panes with ae: title prefix, builds agent table
 regenerate_manifest() {
-    local sess="$1" wdir="$2" origin="$3" mode="$4" main_pane="$5"
-    local manifest="${wdir}/.ae/${sess}/workspace.md"
+    local sess="$1" wdir="$2" origin="$3" mode="$4" main_pane="$5" sessions_dir="$6"
+    local manifest="${sessions_dir}/workspace.md"
 
     # Describe copy mode
     local copy_desc
@@ -733,7 +760,7 @@ ${agent_rows}
 
 Send a message to another agent (sends + presses Enter automatically):
 \`\`\`bash
-${wdir}/.ae/${sess}/send "<tmux target>" "your message"
+${sessions_dir}/send "<tmux target>" "your message"
 \`\`\`
 
 Check another agent's recent output:
@@ -745,7 +772,7 @@ tmux capture-pane -t "<tmux target>" -p | tail -20
 
 Add another agent to this workspace:
 \`\`\`bash
-${wdir}/.ae/${sess}/spawn <alias> [prompt]
+${sessions_dir}/spawn <alias> [prompt]
 \`\`\`
 
 Available aliases: ${available_aliases} (from ~/.ae/config)
@@ -758,7 +785,7 @@ Available aliases: ${available_aliases} (from ~/.ae/config)
 EOF
 }
 
-# Helper: .ae/<session>/spawn <alias> [prompt] — spawn a new agent pane
+# Helper: spawn <alias> [prompt] — spawn a new agent pane
 # Inlines parse_config/get_config to avoid parser duplication drift
 PARSE_CONFIG_BODY="$(declare -f parse_config | tail -n +2)"
 GET_CONFIG_BODY="$(declare -f get_config | tail -n +2)"
@@ -802,7 +829,7 @@ if [[ \$# -lt 1 ]]; then
 fi
 
 alias_name="\$1"; shift
-prompt="\${*:-"You were spawned into an ae workspace. Read .ae/\${session}/workspace.md for details."}"
+prompt="\${*:-"You were spawned into an ae workspace. Read \${META_DIR}/workspace.md for details."}"
 
 # Config parser (inlined from ae to avoid drift)
 CONFIG_FILE="\$config_file"
@@ -833,7 +860,7 @@ fi
 
 # Regenerate workspace.md from live panes
 $(declare -f regenerate_manifest)
-regenerate_manifest "\$session" "\$work_dir" "\$origin" "\$mode" "\$main_pane"
+regenerate_manifest "\$session" "\$work_dir" "\$origin" "\$mode" "\$main_pane" "\$META_DIR"
 
 # Launch agent command
 tmux send-keys -t "\$pane_id" "\$cmd" C-m
@@ -849,10 +876,10 @@ tmux send-keys -t "\$pane_id" Enter
 
 echo "Spawned \$alias_name in pane \$pane_id"
 SPAWNEOF
-chmod +x "${AE_META}/spawn"
+chmod 0700 "${AE_META}/spawn"
 
 # Generate initial workspace.md from live pane state
-regenerate_manifest "$SESSION" "$WORK_DIR" "$ORIGIN_DIR" "$COPY_MODE" "${PANE_IDS[0]}"
+regenerate_manifest "$SESSION" "$WORK_DIR" "$ORIGIN_DIR" "$COPY_MODE" "${PANE_IDS[0]}" "$AE_META"
 
 # --- Launch agents ---
 # Send agent command with prompt. Some tools (codex resume) don't accept inline
@@ -882,7 +909,7 @@ send_agent_cmd() {
 }
 
 if [[ "$RESUMING" == true ]]; then
-    INITIAL_PROMPT="Resumed ae workspace after restart. Pane IDs may have changed. Re-read .ae/${SESSION}/workspace.md for updated agent targets and continue where you left off."
+    INITIAL_PROMPT="Resumed ae workspace after restart. Pane IDs may have changed. Re-read ${AE_META}/workspace.md for updated agent targets and continue where you left off."
 
     # Resume: use tool-specific resume commands (stays in same CWD = correct session)
     MAIN_RESUME="$(resume_cmd_from_cmd "$MAIN_CMD")"
@@ -893,9 +920,9 @@ if [[ "$RESUMING" == true ]]; then
         send_agent_cmd "${PANE_IDS[$idx]}" "$WORKER_RESUME" "$INITIAL_PROMPT"
     done
 else
-    INITIAL_PROMPT="You are in an ae workspace. Read .ae/${SESSION}/workspace.md for details.
-To spawn another agent: .ae/${SESSION}/spawn <alias> [prompt]
-Available agents are defined in ~/.ae/config under [agents]."
+    INITIAL_PROMPT="You are in an ae workspace. Read ${AE_META}/workspace.md for details.
+To spawn another agent: ${AE_META}/spawn <alias> [prompt]
+Available agents are defined in ${CONFIG_FILE} under [agents]."
 
     # Fresh start
     send_agent_cmd "${PANE_IDS[0]}" "$MAIN_CMD" "$INITIAL_PROMPT"

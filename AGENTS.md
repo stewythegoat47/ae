@@ -31,9 +31,10 @@ CLAUDE.md — @AGENTS.md
 
 1. Parses `~/.ae/config` for agent commands and layout
 2. Creates a git worktree (default), full copy (`--copy`), or uses current dir (`--local`)
-3. Writes `.ae/workspace.md` so agents know about each other
-4. Launches agents with a prompt to read the manifest
-5. Attaches
+3. Creates tmux session with main agent (+ workers if configured)
+4. Generates helpers (`send`, `spawn`) and workspace manifest
+5. Launches agents with a prompt to read the manifest
+6. Attaches
 
 ## Config
 
@@ -43,7 +44,7 @@ alias = "shell command"
 
 [workspace]
 main = alias
-workers = alias, alias2
+workers = alias, alias2    # optional, omit for single-agent start
 layout = vertical
 ```
 

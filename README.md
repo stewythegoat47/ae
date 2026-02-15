@@ -5,16 +5,15 @@
 [![tmux](https://img.shields.io/badge/requires-tmux-1BB91F.svg)](https://github.com/tmux/tmux)
 [![Install](https://img.shields.io/badge/install-curl%20%7C%20bash-orange.svg)](#install)
 
-**ae** -- run multiple AI coding agents side-by-side in tmux with shared awareness.
+**ae** -- run AI coding agents in tmux with shared awareness. Start with one, spawn more on demand.
 
 ```
 +---------------------------+---------------------------+
-|  cc (claude code)         |  cx (codex)               |
+|  claude (claude code)     |  codex                    |
 |                           |                           |
-|  > Reading workspace...   |  > Reading workspace...   |
-|  I see cx is in pane %1.  |  I see cc is in pane %0.  |
-|  I can send it messages   |  Waiting for tasks from   |
-|  via tmux send-keys.      |  the main agent.          |
+|  > Reading workspace...   |  > Spawned into session.  |
+|  I'll spawn codex to      |  Reading workspace.md...  |
+|  review my changes.       |  I see claude in pane %0. |
 +---------------------------+---------------------------+
 ```
 
@@ -42,7 +41,7 @@ cd ~/projects/my-app
 ae
 ```
 
-That's it. First run creates a tmux session with your configured agents. Run `ae` again from the same directory to reattach.
+That's it. First run creates a tmux session with your main agent. Spawn more agents on demand from within the session.
 
 Detach with `Ctrl+b d`. Agents keep running in the background.
 
@@ -54,11 +53,27 @@ ae <name>              Start or reattach a named session
 ae --worktree [name]   Start session with git worktree (default)
 ae --copy [name]       Start session with full copy (includes untracked files)
 ae --local [name]      Start session in current directory (no copy)
-ae list                Show all ae sessions (with mode column)
-ae kill <name>         Kill a specific session
-ae kill all            Kill all ae sessions
+ae list                List all ae sessions
+ae kill <name>         Kill a session (or 'ae kill all')
 ae help                Show usage
 ```
+
+## Spawning agents
+
+By default, `ae` starts with just the main agent. Spawn more on demand:
+
+```bash
+.ae/<session>/spawn codex                          # spawn with default prompt
+.ae/<session>/spawn codex "Review changes in src/"  # spawn with custom prompt
+```
+
+The spawn helper:
+1. Looks up the agent command from `~/.ae/config`
+2. Opens a new tmux pane
+3. Updates `workspace.md` so all agents see each other
+4. Launches the agent with the prompt
+
+Spawned agents are ephemeral -- they exist only while the tmux session is alive. On resume after reboot, only config-defined agents (main + optional workers) are relaunched.
 
 ## Modes
 
@@ -89,13 +104,12 @@ CLI flags always override the config.
 
 ```toml
 [agents]
-cc = "claude --permission-mode bypassPermissions --model claude-opus-4-6"
-cx = "codex --yolo -m gpt-5.3-codex -c model_reasoning_effort=high"
-oc = "opencode"
+claude = "claude --permission-mode bypassPermissions --model claude-opus-4-6"
+codex = "codex --yolo -m gpt-5.3-codex -c model_reasoning_effort=high"
+opencode = "opencode"
 
 [workspace]
-main = cc
-workers = cx
+main = claude
 layout = vertical
 ```
 
@@ -105,18 +119,18 @@ Define any number of agents as aliases. The value is the full shell command to l
 
 ### Workspace
 
-| Key       | Description                                           | Default    |
-|-----------|-------------------------------------------------------|------------|
-| `main`    | Agent alias for the primary pane                      | `cc`       |
-| `workers` | Comma-separated agent aliases for additional panes    | `cx`       |
-| `layout`  | `vertical` (side-by-side) or `horizontal` (stacked)   | `vertical` |
-| `copy`    | `git` (worktree), `full` (cp -a), or `local`          | `git`      |
+| Key       | Description                                                | Default    |
+|-----------|------------------------------------------------------------|------------|
+| `main`    | Agent alias for the primary pane                           | `claude`   |
+| `workers` | Comma-separated aliases for agents launched at startup     | *(empty)*  |
+| `layout`  | `vertical` (side-by-side) or `horizontal` (stacked)        | `vertical` |
+| `copy`    | `git` (worktree), `full` (cp -a), or `local`              | `git`      |
 
 ### Examples
 
-Two workers (3 panes):
+Pre-launch workers at startup (optional):
 ```toml
-workers = cx, oc
+workers = codex, opencode
 ```
 
 Stacked layout:
@@ -124,33 +138,28 @@ Stacked layout:
 layout = horizontal
 ```
 
-Full copy mode by default:
-```toml
-copy = full
-```
-
-Local mode (no copy):
-```toml
-copy = local
-```
-
 ## How agents communicate
 
-On session creation, `ae` writes `.ae/workspace.md` in the project directory:
+On session creation, `ae` writes `.ae/<session>/workspace.md`:
 
 ```markdown
 # ae workspace
 
-Session: ae-projects-my-app
-Directory: /home/user/projects/my-app
+Session: ae-projects-my-app-abc123
+Directory: /home/user/.ae/worktrees/ae-projects-my-app-abc123
 Mode: git
 
 ## Agents
 
-| Alias | Tool        | Role   | tmux target |
-|-------|-------------|--------|-------------|
-| cc    | claude code | main   | %0          |
-| cx    | codex       | worker | %1          |
+| Alias  | Tool        | Role   | tmux target |
+|--------|-------------|--------|-------------|
+| claude | claude code | main   | %0          |
+| codex  | codex       | worker | %1          |
+
+## Spawn
+
+Add another agent to this workspace:
+.ae/<session>/spawn <alias> [prompt]
 ```
 
 Each agent starts with a prompt to read this file. From there, any agent can:
@@ -158,6 +167,11 @@ Each agent starts with a prompt to read this file. From there, any agent can:
 **Send a message to another agent:**
 ```bash
 .ae/<session>/send "%1" "Review the changes in src/auth.ts"
+```
+
+**Spawn another agent:**
+```bash
+.ae/<session>/spawn codex "Review these changes"
 ```
 
 **Check what another agent is doing:**
@@ -176,6 +190,7 @@ The human sees all panes and can type in any of them.
 - Sessions survive terminal close (tmux runs in background)
 - **Worktree/copy sessions survive reboot** -- the directory persists on disk, run `ae <name>` again to resume agents with their previous conversation context
 - Local sessions do not survive reboot (no separate directory to detect)
+- On resume, config-defined agents (main + workers) are relaunched; runtime-spawned agents are not
 - `ae list` shows running and stopped (resumable) sessions with their mode
 - `ae kill <name>` removes both the tmux session and associated resources
 
@@ -183,9 +198,9 @@ The human sees all panes and can type in any of them.
 
 1. Validates `~/.ae/config`
 2. Creates a git worktree, full copy, or uses the current directory (local mode)
-3. Creates a tmux session with one pane per agent
-4. Writes a workspace manifest so agents know about each other
-5. Launches each agent with a prompt pointing to the manifest
+3. Creates a tmux session with the main agent (+ workers if configured)
+4. Generates helper scripts (`send`, `spawn`) and workspace manifest
+5. Launches agents with a prompt pointing to the manifest
 6. Attaches you to the session
 
 In worktree/copy mode, agents work on a separate directory. Push to remote and merge from there. After a reboot, run `ae <name>` again to resume. In local mode, agents work directly on the original files.

@@ -7,13 +7,12 @@ CONFIG_FILE="${CONFIG_DIR}/config"
 WORKTREES_DIR="${CONFIG_DIR}/worktrees"
 
 DEFAULT_CONFIG='[agents]
-cc = "claude --permission-mode bypassPermissions --model claude-opus-4-6"
-cx = "codex --yolo -m gpt-5.3-codex -c model_reasoning_effort=high"
-oc = "opencode"
+claude = "claude --permission-mode bypassPermissions --model claude-opus-4-6"
+codex = "codex --yolo -m gpt-5.3-codex -c model_reasoning_effort=high"
+opencode = "opencode"
 
 [workspace]
-main = cc
-workers = cx
+main = claude
 layout = vertical'
 
 # Create default config if missing
@@ -433,25 +432,36 @@ if (( ${#PANE_IDS[@]} > 1 )); then
     fi
 fi
 
-# Label panes with agent aliases
-tmux select-pane -t "${PANE_IDS[0]}" -T "$MAIN_ALIAS"
+# Label panes with ae:<alias> prefix (for manifest filtering)
+tmux select-pane -t "${PANE_IDS[0]}" -T "ae:${MAIN_ALIAS}"
 for i in "${!WORKER_ALIASES[@]}"; do
     idx=$(( i + 1 ))
-    tmux select-pane -t "${PANE_IDS[$idx]}" -T "${WORKER_ALIASES[$i]}"
+    tmux select-pane -t "${PANE_IDS[$idx]}" -T "ae:${WORKER_ALIASES[$i]}"
 done
 
 # --- Generate helper scripts and workspace manifest ---
 AE_META="${WORK_DIR}/.ae/${SESSION}"
 mkdir -p "$AE_META"
 
-# Session metadata (used by ae list/kill for stopped sessions)
-# Only write on fresh creation — preserve original mode/origin on resume
-if [[ "$RESUMING" != true ]]; then
-    cat > "${AE_META}/meta" <<EOF
-mode=${COPY_MODE}
-origin=${ORIGIN_DIR}
-EOF
+# Session metadata (used by ae list/kill for stopped sessions, and by spawn helper)
+# Always write full meta: on resume, preserve original mode/origin from existing file
+META_MODE="$COPY_MODE"
+META_ORIGIN="$ORIGIN_DIR"
+if [[ "$RESUMING" == true ]] && [[ -f "${AE_META}/meta" ]]; then
+    META_MODE="$(read_session_meta "$SESSION" mode)"
+    META_ORIGIN="$(read_session_meta "$SESSION" origin)"
+    META_MODE="${META_MODE:-$COPY_MODE}"
+    META_ORIGIN="${META_ORIGIN:-$ORIGIN_DIR}"
 fi
+cat > "${AE_META}/meta" <<EOF
+mode=${META_MODE}
+origin=${META_ORIGIN}
+session=${SESSION}
+work_dir=${WORK_DIR}
+layout=${LAYOUT:-vertical}
+config=${CONFIG_FILE}
+main_pane=${PANE_IDS[0]}
+EOF
 
 # Helper: .ae/send <target> <message> — focuses pane, pastes text, submits
 cat > "${AE_META}/send" <<'SENDEOF'
@@ -485,46 +495,70 @@ tmux send-keys -t "$target" Enter
 SENDEOF
 chmod +x "${AE_META}/send"
 
-MANIFEST="${AE_META}/workspace.md"
+# Regenerate workspace.md from live tmux pane state
+# Scans panes with ae: title prefix, builds agent table
+regenerate_manifest() {
+    local sess="$1" wdir="$2" origin="$3" mode="$4" main_pane="$5"
+    local manifest="${wdir}/.ae/${sess}/workspace.md"
 
-ALL_ALIASES=("$MAIN_ALIAS" "${WORKER_ALIASES[@]}")
-ALL_CMDS=("$MAIN_CMD" "${WORKER_CMDS[@]}")
-ALL_ROLES=("main")
-for _ in "${WORKER_ALIASES[@]}"; do ALL_ROLES+=("worker"); done
+    # Describe copy mode
+    local copy_desc
+    case "$mode" in
+        git)   copy_desc="You are working on a git worktree (detached HEAD from the origin). Push to remote and merge from there." ;;
+        full)  copy_desc="You are working on a full copy of the project. Push to remote and merge from there." ;;
+        local) copy_desc="You are working directly in the project directory (local mode). Changes affect the original files immediately." ;;
+    esac
 
-AGENT_ROWS=""
-for i in "${!ALL_ALIASES[@]}"; do
-    AGENT_ROWS="${AGENT_ROWS}| ${ALL_ALIASES[$i]} | $(tool_name_from_cmd "${ALL_CMDS[$i]}") | ${ALL_ROLES[$i]} | ${PANE_IDS[$i]} |
+    # Build agent rows from live panes (only ae:-prefixed titles)
+    local agent_rows=""
+    while IFS=$'\t' read -r pane_id pane_title; do
+        [[ "$pane_title" == ae:* ]] || continue
+        local alias_name="${pane_title#ae:}"
+        local role="worker"
+        if [[ "$pane_id" == "$main_pane" ]]; then
+            role="main"
+        fi
+        local cmd tool_label
+        cmd="$(get_config "agents.${alias_name}")"
+        tool_label="$(tool_name_from_cmd "${cmd:-$alias_name}")"
+        agent_rows="${agent_rows}| ${alias_name} | ${tool_label} | ${role} | ${pane_id} |
 "
-done
+    done < <(tmux list-panes -t "$sess" -F '#{pane_id}	#{pane_title}' 2>/dev/null)
 
-# Describe copy mode in manifest
-case "$COPY_MODE" in
-    git)   COPY_DESC="You are working on a git worktree (detached HEAD from the origin). Push to remote and merge from there." ;;
-    full)  COPY_DESC="You are working on a full copy of the project. Push to remote and merge from there." ;;
-    local) COPY_DESC="You are working directly in the project directory (local mode). Changes affect the original files immediately." ;;
-esac
+    # Collect available aliases from config for spawn section
+    local available_aliases=""
+    while IFS= read -r entry; do
+        if [[ "$entry" == agents.* ]]; then
+            local aname="${entry%%=*}"
+            aname="${aname#agents.}"
+            if [[ -n "$available_aliases" ]]; then
+                available_aliases="${available_aliases}, ${aname}"
+            else
+                available_aliases="$aname"
+            fi
+        fi
+    done < <(parse_config)
 
-cat > "$MANIFEST" <<EOF
+    cat > "$manifest" <<EOF
 # ae workspace
 
-Session: ${SESSION}
-Origin: ${ORIGIN_DIR}
-Directory: ${WORK_DIR}
-Mode: ${COPY_MODE}
+Session: ${sess}
+Origin: ${origin}
+Directory: ${wdir}
+Mode: ${mode}
 
-${COPY_DESC}
+${copy_desc}
 
 ## Agents
 
 | Alias | Tool | Role | tmux target |
 |-------|------|------|-------------|
-${AGENT_ROWS}
+${agent_rows}
 ## Communication
 
 Send a message to another agent (sends + presses Enter automatically):
 \`\`\`bash
-${WORK_DIR}/.ae/${SESSION}/send "<tmux target>" "your message"
+${wdir}/.ae/${sess}/send "<tmux target>" "your message"
 \`\`\`
 
 Check another agent's recent output:
@@ -532,12 +566,118 @@ Check another agent's recent output:
 tmux capture-pane -t "<tmux target>" -p | tail -20
 \`\`\`
 
+## Spawn
+
+Add another agent to this workspace:
+\`\`\`bash
+${wdir}/.ae/${sess}/spawn <alias> [prompt]
+\`\`\`
+
+Available aliases: ${available_aliases} (from ~/.ae/config)
+
 ## Rules
 
 - Coordinate file edits -- don't modify the same file simultaneously
 - The human can see all panes and may intervene at any time
 - Always use the send helper above to communicate with other agents (never raw tmux send-keys)
 EOF
+}
+
+# Helper: .ae/<session>/spawn <alias> [prompt] — spawn a new agent pane
+# Inlines parse_config/get_config to avoid parser duplication drift
+PARSE_CONFIG_BODY="$(declare -f parse_config | tail -n +2)"
+GET_CONFIG_BODY="$(declare -f get_config | tail -n +2)"
+TOOL_NAME_BODY="$(declare -f tool_name_from_cmd | tail -n +2)"
+
+cat > "${AE_META}/spawn" <<SPAWNEOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+META_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
+
+# Safe meta parsing (allowlisted keys only, no source)
+declare -A meta=()
+while IFS='=' read -r k v; do
+    case "\$k" in
+        mode|origin|session|work_dir|layout|config|main_pane) meta["\$k"]="\$v" ;;
+    esac
+done < "\$META_DIR/meta"
+
+session="\${meta[session]:-}"
+work_dir="\${meta[work_dir]:-}"
+layout="\${meta[layout]:-vertical}"
+config_file="\${meta[config]:-}"
+main_pane="\${meta[main_pane]:-}"
+origin="\${meta[origin]:-}"
+mode="\${meta[mode]:-}"
+
+if [[ -z "\$session" ]]; then
+    echo "Error: session not found in metadata" >&2
+    exit 1
+fi
+
+if ! tmux has-session -t "\$session" 2>/dev/null; then
+    echo "Error: session '\$session' not running" >&2
+    exit 1
+fi
+
+if [[ \$# -lt 1 ]]; then
+    echo "Usage: spawn <alias> [prompt]" >&2
+    exit 1
+fi
+
+alias_name="\$1"; shift
+prompt="\${*:-"You were spawned into an ae workspace. Read .ae/\${session}/workspace.md for details."}"
+
+# Config parser (inlined from ae to avoid drift)
+CONFIG_FILE="\$config_file"
+parse_config() ${PARSE_CONFIG_BODY}
+get_config() ${GET_CONFIG_BODY}
+tool_name_from_cmd() ${TOOL_NAME_BODY}
+
+cmd="\$(get_config "agents.\${alias_name}")"
+if [[ -z "\$cmd" ]]; then
+    echo "Error: agent '\${alias_name}' not defined in \$config_file" >&2
+    exit 1
+fi
+
+# Split pane
+if [[ "\$layout" == "vertical" ]]; then
+    pane_id="\$(tmux split-window -h -t "\$session" -c "\$work_dir" -P -F '#{pane_id}')"
+else
+    pane_id="\$(tmux split-window -v -t "\$session" -c "\$work_dir" -P -F '#{pane_id}')"
+fi
+
+# Label with ae: prefix and rebalance
+tmux select-pane -t "\$pane_id" -T "ae:\${alias_name}"
+if [[ "\$layout" == "vertical" ]]; then
+    tmux select-layout -t "\$session" even-horizontal
+else
+    tmux select-layout -t "\$session" even-vertical
+fi
+
+# Regenerate workspace.md from live panes
+$(declare -f regenerate_manifest)
+regenerate_manifest "\$session" "\$work_dir" "\$origin" "\$mode" "\$main_pane"
+
+# Launch agent command
+tmux send-keys -t "\$pane_id" "\$cmd" C-m
+
+# Inject prompt via buffer paste (safe for any content)
+sleep 1
+buf="ae-spawn-\$\$"
+tmux select-pane -t "\$pane_id"
+tmux set-buffer -b "\$buf" -- "\$prompt"
+tmux paste-buffer -d -b "\$buf" -t "\$pane_id"
+sleep 0.1
+tmux send-keys -t "\$pane_id" Enter
+
+echo "Spawned \$alias_name in pane \$pane_id"
+SPAWNEOF
+chmod +x "${AE_META}/spawn"
+
+# Generate initial workspace.md from live pane state
+regenerate_manifest "$SESSION" "$WORK_DIR" "$ORIGIN_DIR" "$COPY_MODE" "${PANE_IDS[0]}"
 
 # --- Launch agents ---
 # Send agent command with prompt. Some tools (codex resume) don't accept inline
@@ -578,7 +718,9 @@ if [[ "$RESUMING" == true ]]; then
         send_agent_cmd "${PANE_IDS[$idx]}" "$WORKER_RESUME" "$INITIAL_PROMPT"
     done
 else
-    INITIAL_PROMPT="You are in a multi-agent ae workspace. Read .ae/${SESSION}/workspace.md for details about other agents and how to communicate with them."
+    INITIAL_PROMPT="You are in an ae workspace. Read .ae/${SESSION}/workspace.md for details.
+To spawn another agent: .ae/${SESSION}/spawn <alias> [prompt]
+Available agents are defined in ~/.ae/config under [agents]."
 
     # Fresh start
     send_agent_cmd "${PANE_IDS[0]}" "$MAIN_CMD" "$INITIAL_PROMPT"

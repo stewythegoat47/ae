@@ -246,7 +246,7 @@ sleep 1
 
 # ae status should show pane output
 status_output="$("$AE" status test-status 2>/dev/null)"
-assert_contains "status: shows pane title" "ae:" "$status_output"
+assert_contains "status: shows agent name" "dummy:main" "$status_output"
 
 # Stopped session should say stopped
 tmux kill-session -t test-status 2>/dev/null || true

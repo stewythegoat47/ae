@@ -150,7 +150,7 @@ inject_session_id() {
 # Claude Code: --append-system-prompt; Codex: -c developer_instructions; others: no-op
 inject_ae_context() {
     local cmd="$1" meta_dir="$2" session="${3:-}" work_dir="${4:-}"
-    local ctx="You are in an ae multi-agent workspace. Session: ${session}. Directory: ${work_dir}. Spawn another agent: ${meta_dir}/spawn <alias> [prompt]. Send a message: ${meta_dir}/send \"<pane_id>\" \"<message>\". Check another agent: tmux capture-pane -t \"<pane_id>\" -p | tail -20. Current agent layout and pane IDs: cat ${meta_dir}/workspace.md. Pane IDs look like %0, %1, etc."
+    local ctx="You are in an ae multi-agent workspace. Session: ${session}. Directory: ${work_dir}. Spawn another agent: ${meta_dir}/spawn <alias>[:<name>] [prompt]. Send a message to another agent: ${meta_dir}/send \"<agent_name>\" \"<message>\". Agent names look like claude:main, codex:worker-0. Check another agent: cat ${meta_dir}/workspace.md for names and pane IDs, then tmux capture-pane -t \"<pane_id>\" -p | tail -20."
     local escaped="${ctx//\'/\'\\\'\'}"
     case "$cmd" in
         claude*)
@@ -535,7 +535,7 @@ cmd_status() {
     while IFS=$'\t' read -r pane_id pane_title; do
         [[ "$pane_title" == ae:* ]] || continue
         found=true
-        echo "── ${pane_title} (${pane_id}) ──"
+        echo "── ${pane_title#ae:} (${pane_id}) ──"
         tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -v '^$' | tail -15
         echo ""
     done < <(tmux list-panes -t "$target" -F '#{pane_id}	#{pane_title}' 2>/dev/null)
@@ -859,26 +859,26 @@ ${copy_desc}
 
 ## Agents
 
-| Agent | Tool | Role | tmux target |
-|-------|------|------|-------------|
+| Agent | Tool | Role | Pane |
+|-------|------|------|------|
 ${agent_rows}
 ## Communication
 
-Send a message to another agent (sends + presses Enter automatically):
+Send a message to another agent by name:
 \`\`\`bash
-${sessions_dir}/send "<tmux target>" "your message"
+${sessions_dir}/send "<agent_name>" "your message"
 \`\`\`
 
-Check another agent's recent output:
+Check another agent's recent output (use pane ID from table above):
 \`\`\`bash
-tmux capture-pane -t "<tmux target>" -p | tail -20
+tmux capture-pane -t "<pane_id>" -p | tail -20
 \`\`\`
 
 ## Spawn
 
 Add another agent to this workspace:
 \`\`\`bash
-${sessions_dir}/spawn <alias> [prompt]
+${sessions_dir}/spawn <alias>[:<name>] [prompt]
 \`\`\`
 
 Available aliases: ${available_aliases} (from ~/.ae/config)
@@ -1044,7 +1044,7 @@ tmux set-option -t "$SESSION" mouse on
 tmux set-option -t "$SESSION" focus-events on 2>/dev/null || true
 tmux set-option -t "$SESSION" history-limit 50000
 tmux set-option -t "$SESSION" pane-border-status top
-tmux set-option -t "$SESSION" pane-border-format " #{pane_index}: #{pane_title} "
+tmux set-option -t "$SESSION" pane-border-format " #{s/^ae\\://:pane_title} "
 tmux set-option -t "$SESSION" status-left "[ae] "
 tmux set-option -t "$SESSION" automatic-rename off
 tmux rename-window -t "$SESSION" "$SESSION"
@@ -1176,12 +1176,32 @@ done
 cat > "${AE_META}/send" <<'SENDEOF'
 #!/usr/bin/env bash
 if [[ $# -lt 2 ]]; then
-    echo "Usage: send <tmux-target> <message>" >&2
+    echo "Usage: send <agent-name|pane-id> <message>" >&2
+    echo "  Examples: send claude:main \"hello\"" >&2
+    echo "           send %0 \"hello\"" >&2
     exit 1
 fi
 target="$1"; shift
 msg="$*"
 buf="ae-send-$$"
+
+# Resolve agent name to pane ID (names like claude:main, codex:worker-0)
+if [[ "$target" != %* ]]; then
+    META_DIR="$(cd "$(dirname "$0")" && pwd)"
+    session="$(grep '^session=' "$META_DIR/meta" | cut -d= -f2-)"
+    resolved=""
+    while IFS=$'\t' read -r pid ptitle; do
+        if [[ "$ptitle" == "ae:${target}" ]]; then
+            resolved="$pid"
+            break
+        fi
+    done < <(tmux list-panes -t "$session" -F '#{pane_id}	#{pane_title}' 2>/dev/null)
+    if [[ -z "$resolved" ]]; then
+        echo "Error: agent '${target}' not found" >&2
+        exit 1
+    fi
+    target="$resolved"
+fi
 
 # Save current pane so we can restore focus after send
 current="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"

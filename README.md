@@ -218,8 +218,8 @@ ae discard all
 - Sessions survive terminal close (tmux runs in background)
 - **All sessions survive reboot** -- run `ae <name>` again to resume agents with their previous conversation context
 - Agents with session support (Claude Code) resume exact conversations; others start fresh
-- On resume, config-defined agents (main + workers) are relaunched; runtime-spawned agents are not
-- `ae list` shows running and stopped (resumable) sessions with their mode
+- On resume, all agents are relaunched (main, workers, and runtime-spawned agents)
+- `ae list` shows running and stopped sessions with agent health (`2/2` = all healthy, `1/2!` = one crashed)
 - `ae end <name>` preserves work (commit + push) then cleans up
 - `ae discard <name>` destroys the session without saving
 
@@ -239,6 +239,12 @@ In worktree/copy mode, agents work on a separate directory. When done, `ae end` 
 - [tmux](https://github.com/tmux/tmux)
 - [git](https://git-scm.com/) (for worktree mode and `ae end` push; not needed with `--copy --local`)
 - At least one AI coding agent ([Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [OpenCode](https://github.com/opencode-ai/opencode), or any CLI tool)
+
+## Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `AE_TMUX_SERVER` | Use an isolated tmux server (e.g., `AE_TMUX_SERVER=work ae foo`). Useful for separating ae from personal tmux sessions. |
 
 ## License
 

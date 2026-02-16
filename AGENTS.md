@@ -20,12 +20,13 @@ Single bash script. No dependencies beyond bash and tmux. Keep it that way.
 ## Structure
 
 ```
-ae        — the script
-test      — pure-function test suite (bash, no deps)
-install   — symlink or curl|bash installer
-README.md — user docs
-AGENTS.md — this file
-CLAUDE.md — @AGENTS.md
+ae               — the script
+test             — pure-function unit tests (bash, no deps)
+test-integration — integration tests (requires tmux, git)
+install          — symlink or curl|bash installer
+README.md        — user docs
+AGENTS.md        — this file
+CLAUDE.md        — @AGENTS.md
 ```
 
 ## How it works

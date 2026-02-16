@@ -5,7 +5,9 @@
 [![tmux](https://img.shields.io/badge/requires-tmux-1BB91F.svg)](https://github.com/tmux/tmux)
 [![Install](https://img.shields.io/badge/install-curl%20%7C%20bash-orange.svg)](#install)
 
-**ae** -- run AI coding agents in tmux with shared awareness. Start with one, spawn more on demand.
+**ae** -- one command to run AI coding agents in tmux. Start a session, spawn agents, shut down, come back -- everything resumes.
+
+A single bash script. No frameworks, no runtimes, no dependencies beyond bash, tmux, and git. Just the plumbing to make agentic engineering productive and frictionless.
 
 ```
 +---------------------------+---------------------------+
@@ -74,7 +76,7 @@ The spawn helper:
 3. Updates `workspace.md` so all agents see each other
 4. Launches the agent with the prompt
 
-Spawned agents are ephemeral -- they exist only while the tmux session is alive. On resume after reboot, only config-defined agents (main + optional workers) are relaunched.
+Spawned agents are persistent -- they survive reboots. Run `ae <name>` again and all agents (main, workers, and spawned) resume with their previous conversation context.
 
 ## Modes
 

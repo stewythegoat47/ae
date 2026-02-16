@@ -9,12 +9,13 @@ SESSIONS_DIR="${CONFIG_DIR}/sessions"
 
 # --- Function index ---
 #   Config:     parse_config, get_config
-#   Helpers:    tool_name_from_cmd, resume_cmd_from_cmd, default_session_name, tmux_attach
+#   Helpers:    tool_name_from_cmd, tool_kind_from_cmd, default_session_name, tmux_attach, gen_uuid
+#   Resume:     strip_session_flags, resume_cmd_from_cmd, inject_session_id
 #   Session:    read_session_meta, list_ae_sessions, iter_stopped_sessions, cleanup_session
 #   End/branch: sanitize_branch_name, resolve_session_workdir, end_session
 #   Commands:   cmd_list, cmd_end, cmd_discard, cmd_help
 #   Manifest:   regenerate_manifest
-#   Launch:     send_agent_cmd
+#   Launch:     send_agent_cmd, capture_codex_session_id
 
 DEFAULT_CONFIG='[agents]
 claude = "claude --permission-mode bypassPermissions --model claude-opus-4-6"
@@ -76,15 +77,78 @@ tool_name_from_cmd() {
     esac
 }
 
-# Derive resume command from start command
-# Claude Code: add --continue to resume last conversation in CWD
-# Codex: use `codex resume --last` to resume last session in CWD
-# Others: start fresh (no known resume mechanism)
+# Strip session/resume flags from a command (whole-token matching to avoid mangling e.g. --continue-on-error)
+strip_session_flags() {
+    echo "$1" | sed \
+        -e 's/\(^\|  *\)--session-id[= ][^ ]*/\1/g' \
+        -e 's/\(^\|  *\)--resume[= ][^ ]*/\1/g' \
+        -e 's/\(^\|  *\)--continue\(  *\|$\)/\1\2/g' \
+        -e 's/  */ /g; s/^ //; s/ $//'
+}
+
+# Derive resume command with session-scoped ID (survives multiple concurrent sessions)
+# Falls back to heuristic resume, then fresh start
 resume_cmd_from_cmd() {
+    local cmd="$1" session_id="${2:-}"
+    # Treat "pending" (uncaptured) as no session ID — fall back to fresh start
+    [[ "$session_id" == "pending" ]] && session_id=""
+    local clean
+    clean="$(strip_session_flags "$cmd")"
+    case "$cmd" in
+        claude*)
+            if [[ -n "$session_id" ]]; then
+                echo "${clean} --resume ${session_id}"
+            else
+                echo "${clean} --continue"
+            fi
+            ;;
+        codex*)
+            if [[ -n "$session_id" ]]; then
+                echo "codex resume ${session_id}"
+            else
+                echo "$clean"  # fresh start (--last is unreliable for concurrent sessions)
+            fi
+            ;;
+        *)  echo "$clean" ;;  # fresh start for unknown agents
+    esac
+}
+
+# Inject agent-scoped session ID into start command (enables targeted resume later)
+inject_session_id() {
+    local cmd="$1" session_id="$2"
+    [[ "$session_id" == "pending" ]] && session_id=""
+    local clean
+    clean="$(strip_session_flags "$cmd")"
+    if [[ -n "$session_id" ]]; then
+        case "$cmd" in
+            claude*) echo "${clean} --session-id ${session_id}" ;;
+            *)       echo "$clean" ;;
+        esac
+    else
+        echo "$clean"
+    fi
+}
+
+# Generate a UUID (for agent session scoping)
+gen_uuid() {
+    if [[ -f /proc/sys/kernel/random/uuid ]]; then
+        cat /proc/sys/kernel/random/uuid
+    elif command -v uuidgen >/dev/null 2>&1; then
+        uuidgen
+    else
+        echo "ae: no UUID generator available (need /proc/sys/kernel/random/uuid or uuidgen)" >&2
+        echo "ae: install util-linux or uuid-runtime, or ensure /proc is mounted" >&2
+        return 1
+    fi
+}
+
+# Detect tool kind from command (for staleness checks on resume)
+tool_kind_from_cmd() {
     case "$1" in
-        claude*) echo "${1} --continue" ;;
-        codex*)  echo "codex resume --last" ;;
-        *)       echo "$1" ;;
+        claude*)   echo "claude" ;;
+        codex*)    echo "codex" ;;
+        opencode*) echo "opencode" ;;
+        *)         echo "unknown" ;;
     esac
 }
 
@@ -453,7 +517,7 @@ cmd_help() {
     echo "  ae help                Show this help"
     echo ""
     echo "Modes: --local (default), --copy (full cp -a), --worktree (git worktree)."
-    echo "Worktree/copy sessions persist across reboots. Local sessions do not."
+    echo "Sessions persist across reboots. Agents with session support resume conversations; others start fresh."
     echo ""
     echo "Config: ~/.ae/config"
 }
@@ -556,6 +620,11 @@ if [[ "$COPY_MODE" == "local" ]]; then
         exit 1
     fi
     WORK_DIR="$PWD"
+    # Resume if session meta exists from a previous run (e.g. after reboot)
+    if [[ -f "${SESSIONS_DIR}/${SESSION}/meta" ]]; then
+        RESUMING=true
+        echo "Resuming session ${SESSION}..."
+    fi
 elif [[ -d "$WORK_DIR" ]]; then
     # Existing worktree — resume it (e.g. after reboot)
     RESUMING=true
@@ -651,6 +720,44 @@ if [[ "$RESUMING" == true ]]; then
     META_MODE="${META_MODE:-$COPY_MODE}"
     META_ORIGIN="${META_ORIGIN:-$ORIGIN_DIR}"
 fi
+
+# Generate or restore per-agent session IDs (keyed by pane slot, not alias, to avoid collisions)
+# Each entry stores tool_kind:uuid so we can detect stale IDs after config changes
+# For agents that don't support pre-assigned session IDs (codex), we store "pending" and
+# capture the real ID post-launch. On resume, "pending" falls back to fresh start.
+resolve_agent_session_id() {
+    local cmd="$1" slot="$2"
+    local kind
+    kind="$(tool_kind_from_cmd "$cmd")"
+    local session_id=""
+    if [[ "$RESUMING" == true ]]; then
+        local stored
+        stored="$(read_session_meta "$SESSION" "agent_session.${slot}")"
+        if [[ -n "$stored" ]]; then
+            local stored_kind="${stored%%:*}"
+            local stored_id="${stored#*:}"
+            if [[ "$stored_kind" == "$kind" ]] && [[ "$stored_id" != "pending" ]]; then
+                session_id="$stored_id"
+            fi
+        fi
+    fi
+    if [[ -z "$session_id" ]]; then
+        case "$cmd" in
+            claude*) session_id="$(gen_uuid)" ;;
+            *)       session_id="pending" ;;  # captured post-launch or fresh start on resume
+        esac
+    fi
+    echo "$session_id"
+}
+
+MAIN_TOOL_KIND="$(tool_kind_from_cmd "$MAIN_CMD")"
+MAIN_SESSION_ID="$(resolve_agent_session_id "$MAIN_CMD" "main")"
+
+declare -a WORKER_SESSION_IDS=()
+for i in "${!WORKER_CMDS[@]}"; do
+    WORKER_SESSION_IDS+=("$(resolve_agent_session_id "${WORKER_CMDS[$i]}" "worker.${i}")")
+done
+
 cat > "${AE_META}/meta" <<EOF
 mode=${META_MODE}
 origin=${META_ORIGIN}
@@ -659,7 +766,13 @@ work_dir=${WORK_DIR}
 layout=${LAYOUT:-vertical}
 config=${CONFIG_FILE}
 main_pane=${PANE_IDS[0]}
+agent_session.main=${MAIN_TOOL_KIND}:${MAIN_SESSION_ID}
 EOF
+# Append worker session IDs (extra keys are intentionally ignored by spawn helper parser)
+for i in "${!WORKER_CMDS[@]}"; do
+    local_kind="$(tool_kind_from_cmd "${WORKER_CMDS[$i]}")"
+    echo "agent_session.worker.${i}=${local_kind}:${WORKER_SESSION_IDS[$i]}" >> "${AE_META}/meta"
+done
 
 # Helper: send <target> <message> — focuses pane, pastes text, submits
 cat > "${AE_META}/send" <<'SENDEOF'
@@ -907,12 +1020,12 @@ send_agent_cmd() {
 if [[ "$RESUMING" == true ]]; then
     INITIAL_PROMPT="Resumed ae workspace after restart. Pane IDs may have changed. Re-read ${AE_META}/workspace.md for updated agent targets and continue where you left off."
 
-    # Resume: use tool-specific resume commands (stays in same CWD = correct session)
-    MAIN_RESUME="$(resume_cmd_from_cmd "$MAIN_CMD")"
+    # Resume: use session-scoped resume commands (exact conversation, not CWD heuristic)
+    MAIN_RESUME="$(resume_cmd_from_cmd "$MAIN_CMD" "$MAIN_SESSION_ID")"
     send_agent_cmd "${PANE_IDS[0]}" "$MAIN_RESUME" "$INITIAL_PROMPT"
     for i in "${!WORKER_CMDS[@]}"; do
         idx=$(( i + 1 ))
-        WORKER_RESUME="$(resume_cmd_from_cmd "${WORKER_CMDS[$i]}")"
+        WORKER_RESUME="$(resume_cmd_from_cmd "${WORKER_CMDS[$i]}" "${WORKER_SESSION_IDS[$i]:-}")"
         send_agent_cmd "${PANE_IDS[$idx]}" "$WORKER_RESUME" "$INITIAL_PROMPT"
     done
 else
@@ -920,11 +1033,40 @@ else
 To spawn another agent: ${AE_META}/spawn <alias> [prompt]
 Available agents are defined in ${CONFIG_FILE} under [agents]."
 
-    # Fresh start
-    send_agent_cmd "${PANE_IDS[0]}" "$MAIN_CMD" "$INITIAL_PROMPT"
+    # Fresh start with session-scoped IDs (enables targeted resume later)
+    SCOPED_MAIN="$(inject_session_id "$MAIN_CMD" "$MAIN_SESSION_ID")"
+    send_agent_cmd "${PANE_IDS[0]}" "$SCOPED_MAIN" "$INITIAL_PROMPT"
     for i in "${!WORKER_CMDS[@]}"; do
         idx=$(( i + 1 ))
-        send_agent_cmd "${PANE_IDS[$idx]}" "${WORKER_CMDS[$i]}" "$INITIAL_PROMPT"
+        SCOPED_WORKER="$(inject_session_id "${WORKER_CMDS[$i]}" "${WORKER_SESSION_IDS[$i]:-}")"
+        send_agent_cmd "${PANE_IDS[$idx]}" "$SCOPED_WORKER" "$INITIAL_PROMPT"
+    done
+fi
+
+# Best-effort: capture Codex session IDs post-launch (codex prints session id on startup)
+# Runs in background so it doesn't delay attach
+if [[ "$RESUMING" != true ]]; then
+    capture_codex_session_id() {
+        local pane="$1" slot="$2" meta_dir="$3"
+        sleep 5
+        local captured
+        captured="$(tmux capture-pane -t "$pane" -p 2>/dev/null | grep -oP 'session id: \K[0-9a-f-]+' | head -1 || true)"
+        if [[ -n "$captured" ]]; then
+            # Update meta with captured codex session ID (flock to avoid races with concurrent captures)
+            (
+                flock -w 5 200 || exit 1
+                local escaped_slot="${slot//./\\.}"
+                sed -i "s/^agent_session\.${escaped_slot}=codex:.*$/agent_session.${slot}=codex:${captured}/" "$meta_dir/meta"
+            ) 200>"$meta_dir/meta.lock"
+        fi
+    }
+    if [[ "$(tool_kind_from_cmd "$MAIN_CMD")" == "codex" ]]; then
+        capture_codex_session_id "${PANE_IDS[0]}" "main" "$AE_META" &
+    fi
+    for i in "${!WORKER_CMDS[@]}"; do
+        if [[ "$(tool_kind_from_cmd "${WORKER_CMDS[$i]}")" == "codex" ]]; then
+            capture_codex_session_id "${PANE_IDS[$(( i + 1 ))]}" "worker.${i}" "$AE_META" &
+        fi
     done
 fi
 

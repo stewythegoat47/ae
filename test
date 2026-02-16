@@ -19,16 +19,12 @@ assert_eq() {
     fi
 }
 
-# Source only the pure functions from ae.
-# Extract the top-of-file function block (lines between "set -euo pipefail" and the first
-# non-function line like a subcommand or variable assignment). These are all defined before
-# line 200 in the script, so we grab that prefix and eval it in a subshell-safe way.
-# Only extract from the first ~200 lines (pure function block, before main logic / heredocs)
-eval "$(head -200 "$(dirname "$0")/ae" | awk '
-    /^(strip_session_flags|resume_cmd_from_cmd|inject_session_id|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd)\(\)/ { printing=1 }
+# Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
+eval "$(awk '
+    /^(strip_session_flags|resume_cmd_from_cmd|inject_session_id|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|default_session_name|sanitize_branch_name)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
-')"
+' "$(dirname "$0")/ae")"
 
 # ── strip_session_flags ──────────────────────────────────────────────
 
@@ -157,6 +153,47 @@ uuid2="$(gen_uuid)"
 assert_eq "gen_uuid: produces unique values" \
     "1" \
     "$([[ "$uuid" != "$uuid2" ]] && echo 1 || echo 0)"
+
+# ── sanitize_branch_name ─────────────────────────────────────────────
+
+assert_eq "branch: simple name" \
+    "ae/myfeature" \
+    "$(sanitize_branch_name "myfeature")"
+
+assert_eq "branch: strips ae- prefix" \
+    "ae/myfeature" \
+    "$(sanitize_branch_name "ae-myfeature")"
+
+assert_eq "branch: replaces spaces and special chars" \
+    "ae/my-feature-v2" \
+    "$(sanitize_branch_name "my feature!v2")"
+
+assert_eq "branch: collapses repeated dashes" \
+    "ae/a-b" \
+    "$(sanitize_branch_name "a---b")"
+
+assert_eq "branch: trims leading/trailing dashes" \
+    "ae/foo" \
+    "$(sanitize_branch_name "-foo-")"
+
+assert_eq "branch: dots and underscores preserved" \
+    "ae/v1.2_rc" \
+    "$(sanitize_branch_name "v1.2_rc")"
+
+# ── default_session_name ────────────────────────────────────────────
+
+name="$(default_session_name)"
+assert_eq "default_session_name: starts with ae-" \
+    "1" \
+    "$([[ "$name" == ae-* ]] && echo 1 || echo 0)"
+
+assert_eq "default_session_name: contains hash suffix" \
+    "1" \
+    "$([[ "$name" =~ -[0-9a-f]{6}$ ]] && echo 1 || echo 0)"
+
+assert_eq "default_session_name: deterministic (same PWD = same name)" \
+    "$name" \
+    "$(default_session_name)"
 
 # ── Results ──────────────────────────────────────────────────────────
 

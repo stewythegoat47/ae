@@ -1012,7 +1012,12 @@ send_agent_cmd() {
             ) &
             ;;
         *)
-            tmux send-keys -t "$pane" "$cmd '$prompt'" C-m
+            # Buffer-paste avoids tmux escaping issues; shell-escape single quotes in prompt
+            local escaped_prompt="${prompt//\'/\'\\\'\'}"
+            local buf="ae-launch-$$-${pane}"
+            tmux set-buffer -b "$buf" -- "${cmd} '${escaped_prompt}'"
+            tmux paste-buffer -d -b "$buf" -t "$pane"
+            tmux send-keys -t "$pane" C-m
             ;;
     esac
 }

@@ -31,7 +31,7 @@ CLAUDE.md — @AGENTS.md
 ## How it works
 
 1. Parses `~/.ae/config` for agent commands and layout
-2. Creates a git worktree (default), full copy (`--copy`), or uses current dir (`--local`)
+2. Uses current dir (default `--local`), full copy (`--copy`), or git worktree (`--worktree`)
 3. Creates tmux session with main agent (+ workers if configured)
 4. Generates helpers (`send`, `spawn`) and workspace manifest
 5. Launches agents with a prompt to read the manifest

@@ -84,7 +84,7 @@ Spawned agents are ephemeral -- they exist only while the tmux session is alive.
 | **copy** | `--copy` | Full `cp -a` copy. Includes untracked files (node_modules, .venv, etc.). |
 | **worktree** | `--worktree` | Git worktree (detached HEAD). Fast, shares `.git`, tracked files only. |
 
-Worktree and copy sessions persist across reboots. Local sessions do not (nothing on disk to resume).
+All sessions persist across reboots. Run `ae <name>` again to resume agents with their previous conversation context.
 
 ```bash
 ae --copy my-rework       # full copy for heavy dependency work
@@ -216,8 +216,8 @@ ae discard all
 - Multiple named sessions can run in the same directory
 - `ae <name>` from anywhere reattaches if the session exists
 - Sessions survive terminal close (tmux runs in background)
-- **Worktree/copy sessions survive reboot** -- the directory persists on disk, run `ae <name>` again to resume agents with their previous conversation context
-- Local sessions do not survive reboot (no separate directory to detect)
+- **All sessions survive reboot** -- run `ae <name>` again to resume agents with their previous conversation context
+- Agents with session support (Claude Code) resume exact conversations; others start fresh
 - On resume, config-defined agents (main + workers) are relaunched; runtime-spawned agents are not
 - `ae list` shows running and stopped (resumable) sessions with their mode
 - `ae end <name>` preserves work (commit + push) then cleans up

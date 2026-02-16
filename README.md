@@ -49,17 +49,9 @@ ae my-feature                  # named session
 ae                             # default session (named after directory)
 ```
 
-**Spawn agents from within a session (or let your main agent do it):**
-```bash
-spawn codex:reviewer "Review the changes in src/"
-spawn claude:pair-programmer "Help me refactor the auth module"
-```
+**Ask your agent to collaborate:**
 
-Agents pick descriptive names and address each other directly:
-```bash
-send "claude:lead" "I found a bug in auth.ts, check line 42"
-send "codex:reviewer" "Looks good, merge it"
-```
+Just tell your agent what you need -- it knows how to spawn others and coordinate. For example: *"Get a second agent to review the changes in src/"* or *"Spin up a pair programmer to help refactor auth."* Agents pick descriptive names, show up in adjacent panes, and talk to each other directly.
 
 **Come back after a reboot:**
 ```bash
@@ -102,9 +94,17 @@ layout = vertical
 | `main`    | `alias:name` for the primary agent                   | `claude:lead` |
 | `workers` | Comma-separated agents launched at startup           | *(empty)*     |
 | `layout`  | `vertical` (side-by-side) or `horizontal` (stacked)  | `vertical`    |
-| `copy`    | `local`, `full` (cp -a), or `git` (worktree)         | `local`       |
+| `copy`    | Working directory mode (see below)                     | `local`       |
 
 Names show in pane borders and are how agents address each other.
+
+**Copy modes** -- how agents access your code:
+
+| Mode | Flag | What it does |
+|------|------|------|
+| `local` | *(default)* | Agents work directly in your project directory. Simple and fast. |
+| `full` | `--copy` | Full copy of the project. Use for complex features where agents need an isolated workspace. |
+| `worktree` | `--worktree` | Git worktree. Lightweight branch isolation backed by git. |
 
 **Pre-launch multiple agents:**
 ```toml

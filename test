@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# Test suite for ae pure functions
+# Run: ./test (or: bash test)
+# No dependencies beyond bash.
+
+set -euo pipefail
+
+PASS=0
+FAIL=0
+ERRORS=()
+
+assert_eq() {
+    local label="$1" expected="$2" actual="$3"
+    if [[ "$expected" == "$actual" ]]; then
+        PASS=$((PASS + 1))
+    else
+        FAIL=$((FAIL + 1))
+        ERRORS+=("FAIL: $label\n  expected: \"$expected\"\n  actual:   \"$actual\"")
+    fi
+}
+
+# Source only the pure functions from ae.
+# Extract the top-of-file function block (lines between "set -euo pipefail" and the first
+# non-function line like a subcommand or variable assignment). These are all defined before
+# line 200 in the script, so we grab that prefix and eval it in a subshell-safe way.
+# Only extract from the first ~200 lines (pure function block, before main logic / heredocs)
+eval "$(head -200 "$(dirname "$0")/ae" | awk '
+    /^(strip_session_flags|resume_cmd_from_cmd|inject_session_id|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd)\(\)/ { printing=1 }
+    printing { print }
+    printing && /^\}$/ { printing=0 }
+')"
+
+# ── strip_session_flags ──────────────────────────────────────────────
+
+assert_eq "strip: --session-id with =" \
+    "claude --model opus" \
+    "$(strip_session_flags "claude --session-id=abc-123 --model opus")"
+
+assert_eq "strip: --session-id with space" \
+    "claude --model opus" \
+    "$(strip_session_flags "claude --session-id abc-123 --model opus")"
+
+assert_eq "strip: --resume with =" \
+    "claude --model opus" \
+    "$(strip_session_flags "claude --resume=abc-123 --model opus")"
+
+assert_eq "strip: --resume with space" \
+    "claude --model opus" \
+    "$(strip_session_flags "claude --resume abc-123 --model opus")"
+
+assert_eq "strip: --continue alone" \
+    "claude --model opus" \
+    "$(strip_session_flags "claude --continue --model opus")"
+
+assert_eq "strip: --continue at end" \
+    "claude --model opus" \
+    "$(strip_session_flags "claude --model opus --continue")"
+
+assert_eq "strip: preserves --continue-on-error" \
+    "claude --continue-on-error --model opus" \
+    "$(strip_session_flags "claude --continue-on-error --model opus")"
+
+assert_eq "strip: preserves --continuation" \
+    "sometool --continuation" \
+    "$(strip_session_flags "sometool --continuation")"
+
+assert_eq "strip: multiple flags at once" \
+    "claude --model opus" \
+    "$(strip_session_flags "claude --session-id abc --resume def --continue --model opus")"
+
+assert_eq "strip: no flags to strip" \
+    "codex --yolo -m gpt-5" \
+    "$(strip_session_flags "codex --yolo -m gpt-5")"
+
+assert_eq "strip: only --continue" \
+    "claude" \
+    "$(strip_session_flags "claude --continue")"
+
+# ── tool_kind_from_cmd ───────────────────────────────────────────────
+
+assert_eq "kind: claude" "claude" "$(tool_kind_from_cmd "claude --model opus")"
+assert_eq "kind: codex"  "codex"  "$(tool_kind_from_cmd "codex --yolo")"
+assert_eq "kind: opencode" "opencode" "$(tool_kind_from_cmd "opencode")"
+assert_eq "kind: unknown" "unknown" "$(tool_kind_from_cmd "sometool --flag")"
+
+# ── tool_name_from_cmd ──────────────────────────────────────────────
+
+assert_eq "name: claude" "claude code" "$(tool_name_from_cmd "claude --model opus")"
+assert_eq "name: codex"  "codex"       "$(tool_name_from_cmd "codex --yolo")"
+assert_eq "name: opencode" "opencode"  "$(tool_name_from_cmd "opencode")"
+assert_eq "name: unknown passes through" "mytool --flag" "$(tool_name_from_cmd "mytool --flag")"
+
+# ── inject_session_id ───────────────────────────────────────────────
+
+assert_eq "inject: claude gets --session-id" \
+    "claude --model opus --session-id abc-123" \
+    "$(inject_session_id "claude --model opus" "abc-123")"
+
+assert_eq "inject: codex unchanged (no --session-id support)" \
+    "codex --yolo" \
+    "$(inject_session_id "codex --yolo" "abc-123")"
+
+assert_eq "inject: pending treated as empty" \
+    "claude --model opus" \
+    "$(inject_session_id "claude --model opus" "pending")"
+
+assert_eq "inject: empty session_id returns clean cmd" \
+    "claude --model opus" \
+    "$(inject_session_id "claude --model opus" "")"
+
+assert_eq "inject: strips existing before injecting" \
+    "claude --model opus --session-id new-uuid" \
+    "$(inject_session_id "claude --session-id old-uuid --model opus" "new-uuid")"
+
+# ── resume_cmd_from_cmd ─────────────────────────────────────────────
+
+assert_eq "resume: claude with session_id → --resume" \
+    "claude --model opus --resume abc-123" \
+    "$(resume_cmd_from_cmd "claude --model opus" "abc-123")"
+
+assert_eq "resume: claude without session_id → --continue" \
+    "claude --model opus --continue" \
+    "$(resume_cmd_from_cmd "claude --model opus")"
+
+assert_eq "resume: claude with pending → --continue (fallback)" \
+    "claude --model opus --continue" \
+    "$(resume_cmd_from_cmd "claude --model opus" "pending")"
+
+assert_eq "resume: codex with session_id → codex resume <id>" \
+    "codex resume abc-123" \
+    "$(resume_cmd_from_cmd "codex --yolo" "abc-123")"
+
+assert_eq "resume: codex without session_id → fresh start" \
+    "codex --yolo" \
+    "$(resume_cmd_from_cmd "codex --yolo")"
+
+assert_eq "resume: codex with pending → fresh start" \
+    "codex --yolo" \
+    "$(resume_cmd_from_cmd "codex --yolo" "pending")"
+
+assert_eq "resume: unknown agent → fresh start (clean cmd)" \
+    "opencode" \
+    "$(resume_cmd_from_cmd "opencode")"
+
+assert_eq "resume: strips old flags before building resume cmd" \
+    "claude --model opus --resume new-uuid" \
+    "$(resume_cmd_from_cmd "claude --resume old-uuid --model opus" "new-uuid")"
+
+# ── gen_uuid ─────────────────────────────────────────────────────────
+
+uuid="$(gen_uuid)"
+assert_eq "gen_uuid: produces valid UUID format" \
+    "1" \
+    "$([[ "$uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] && echo 1 || echo 0)"
+
+uuid2="$(gen_uuid)"
+assert_eq "gen_uuid: produces unique values" \
+    "1" \
+    "$([[ "$uuid" != "$uuid2" ]] && echo 1 || echo 0)"
+
+# ── Results ──────────────────────────────────────────────────────────
+
+echo ""
+if [[ ${#ERRORS[@]} -gt 0 ]]; then
+    for err in "${ERRORS[@]}"; do
+        echo -e "$err"
+        echo ""
+    done
+fi
+echo "${PASS} passed, ${FAIL} failed"
+[[ $FAIL -eq 0 ]] && exit 0 || exit 1

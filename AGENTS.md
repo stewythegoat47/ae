@@ -21,6 +21,7 @@ Single bash script. No dependencies beyond bash and tmux. Keep it that way.
 
 ```
 ae        — the script
+test      — pure-function test suite (bash, no deps)
 install   — symlink or curl|bash installer
 README.md — user docs
 AGENTS.md — this file

@@ -700,7 +700,10 @@ cmd_help() {
 # Internal: spawn a new agent pane (called via spawn helper → ae _spawn)
 _cmd_spawn() {
     local meta_dir="$1"; shift
-    local alias_name="$1"; shift
+    local alias_arg="$1"; shift
+    local alias_name="${alias_arg%%:*}"
+    local spawn_name=""
+    [[ "$alias_arg" == *:* ]] && spawn_name="${alias_arg#*:}"
     local prompt="${*:-"You were spawned into an ae workspace. Read ${meta_dir}/workspace.md for details."}"
 
     # Read meta
@@ -742,29 +745,32 @@ _cmd_spawn() {
         pane_id="$(tmux split-window -v -t "$session" -c "$work_dir" -P -F '#{pane_id}')"
     fi
 
-    # Label and rebalance
-    tmux select-pane -t "$pane_id" -T "ae:${alias_name}"
+    # Rebalance layout
     if [[ "$layout" == "vertical" ]]; then
         tmux select-layout -t "$session" even-horizontal
     else
         tmux select-layout -t "$session" even-vertical
     fi
 
-    # Register spawned agent in meta with session ID (survives reboot)
-    local next_idx=0
-    while [[ -n "$(read_session_meta "$session" "spawned.${next_idx}")" ]]; do
-        next_idx=$(( next_idx + 1 ))
-    done
-    local slot="spawned.${next_idx}"
-    local session_id
-    session_id="$(resolve_agent_session_id "$cmd" "$slot")"
-    local tool_kind
+    # Register spawned agent in meta (flock-protected to prevent races)
+    local session_id tool_kind next_idx slot
+    session_id="$(resolve_agent_session_id "$cmd" "spawned.0")"
     tool_kind="$(tool_kind_from_cmd "$cmd")"
-    (
-        flock -w 5 200 || exit 1
-        echo "spawned.${next_idx}=${alias_name}" >> "$meta_dir/meta"
+    {
+        flock -w 5 200 || { echo "Error: could not lock meta" >&2; return 1; }
+        next_idx=0
+        while grep -q "^spawned\\.${next_idx}=" "$meta_dir/meta" 2>/dev/null; do
+            next_idx=$(( next_idx + 1 ))
+        done
+        slot="spawned.${next_idx}"
+        [[ -z "$spawn_name" ]] && spawn_name="spawned-${next_idx}"
+        session_id="$(resolve_agent_session_id "$cmd" "$slot")"
+        echo "${slot}=${alias_name}:${spawn_name}" >> "$meta_dir/meta"
         echo "agent_session.${slot}=${tool_kind}:${session_id}" >> "$meta_dir/meta"
-    ) 200>"$meta_dir/meta.lock"
+    } 200>"$meta_dir/meta.lock"
+
+    # Label pane (after flock so spawn_name is resolved)
+    tmux select-pane -t "$pane_id" -T "ae:${alias_name}:${spawn_name}"
 
     # Regenerate workspace.md from live panes
     regenerate_manifest "$session" "$work_dir" "$origin" "$mode" "$main_pane" "$meta_dir"
@@ -789,7 +795,7 @@ _cmd_spawn() {
     sleep 0.1
     tmux send-keys -t "$pane_id" Enter
 
-    echo "Spawned $alias_name in pane $pane_id"
+    echo "Spawned ${alias_name}:${spawn_name} in pane $pane_id"
 }
 
 # Regenerate workspace.md from live tmux pane state
@@ -810,15 +816,20 @@ regenerate_manifest() {
     local agent_rows=""
     while IFS=$'\t' read -r pane_id pane_title; do
         [[ "$pane_title" == ae:* ]] || continue
-        local alias_name="${pane_title#ae:}"
-        local role="worker"
-        if [[ "$pane_id" == "$main_pane" ]]; then
-            role="main"
-        fi
+        local stripped="${pane_title#ae:}"
+        local alias_name="${stripped%%:*}"
+        local agent_name="${stripped#*:}"
+        agent_name="${agent_name%%:*}"  # guard against nested colons
+        local role
+        case "$agent_name" in
+            main)     role="main" ;;
+            worker-*) role="worker" ;;
+            *)        role="spawned" ;;
+        esac
         local cmd tool_label
         cmd="$(get_config "agents.${alias_name}")"
         tool_label="$(tool_name_from_cmd "${cmd:-$alias_name}")"
-        agent_rows="${agent_rows}| ${alias_name} | ${tool_label} | ${role} | ${pane_id} |
+        agent_rows="${agent_rows}| ${alias_name}:${agent_name} | ${tool_label} | ${role} | ${pane_id} |
 "
     done < <(tmux list-panes -t "$sess" -F '#{pane_id}	#{pane_title}' 2>/dev/null)
 
@@ -848,7 +859,7 @@ ${copy_desc}
 
 ## Agents
 
-| Alias | Tool | Role | tmux target |
+| Agent | Tool | Role | tmux target |
 |-------|------|------|-------------|
 ${agent_rows}
 ## Communication
@@ -1060,10 +1071,10 @@ if (( ${#PANE_IDS[@]} > 1 )); then
 fi
 
 # Label panes with ae:<alias> prefix (for manifest filtering)
-tmux select-pane -t "${PANE_IDS[0]}" -T "ae:${MAIN_ALIAS}"
+tmux select-pane -t "${PANE_IDS[0]}" -T "ae:${MAIN_ALIAS}:main"
 for i in "${!WORKER_ALIASES[@]}"; do
     idx=$(( i + 1 ))
-    tmux select-pane -t "${PANE_IDS[$idx]}" -T "ae:${WORKER_ALIASES[$i]}"
+    tmux select-pane -t "${PANE_IDS[$idx]}" -T "ae:${WORKER_ALIASES[$i]}:worker-${i}"
 done
 
 # --- Generate helper scripts and workspace manifest ---
@@ -1091,15 +1102,24 @@ for i in "${!WORKER_CMDS[@]}"; do
 done
 
 # Load spawned agents from previous session (resume only)
-declare -a SPAWNED_ALIASES=() SPAWNED_CMDS=() SPAWNED_SESSION_IDS=()
+declare -a SPAWNED_ALIASES=() SPAWNED_NAMES=() SPAWNED_CMDS=() SPAWNED_SESSION_IDS=()
 if [[ "$RESUMING" == true ]]; then
     sidx=0
     while true; do
         sentry="$(read_session_meta "$SESSION" "spawned.${sidx}")"
         [[ -z "$sentry" ]] && break
-        scmd="$(get_config "agents.${sentry}")"
+        # Parse alias:name (backward compat: old format without name)
+        if [[ "$sentry" == *:* ]]; then
+            salias="${sentry%%:*}"
+            sname="${sentry#*:}"
+        else
+            salias="$sentry"
+            sname="spawned-${sidx}"
+        fi
+        scmd="$(get_config "agents.${salias}")"
         if [[ -n "$scmd" ]]; then
-            SPAWNED_ALIASES+=("$sentry")
+            SPAWNED_ALIASES+=("$salias")
+            SPAWNED_NAMES+=("$sname")
             SPAWNED_CMDS+=("$scmd")
             SPAWNED_SESSION_IDS+=("$(resolve_agent_session_id "$scmd" "spawned.${sidx}")")
         fi
@@ -1115,7 +1135,7 @@ if [[ "$RESUMING" == true ]]; then
             local_id="$(tmux split-window -v -t "$SESSION" -c "$WORK_DIR" -P -F '#{pane_id}')"
         fi
         PANE_IDS+=("$local_id")
-        tmux select-pane -t "$local_id" -T "ae:${SPAWNED_ALIASES[$i]}"
+        tmux select-pane -t "$local_id" -T "ae:${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]}"
     done
     # Rebalance if spawned agents were added
     if (( ${#SPAWNED_ALIASES[@]} > 0 )); then
@@ -1148,7 +1168,7 @@ done
 # Append spawned agent info (resume only — fresh starts have no spawned agents yet)
 for i in "${!SPAWNED_ALIASES[@]}"; do
     local_kind="$(tool_kind_from_cmd "${SPAWNED_CMDS[$i]}")"
-    echo "spawned.${i}=${SPAWNED_ALIASES[$i]}" >> "${AE_META}/meta"
+    echo "spawned.${i}=${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]}" >> "${AE_META}/meta"
     echo "agent_session.spawned.${i}=${local_kind}:${SPAWNED_SESSION_IDS[$i]}" >> "${AE_META}/meta"
 done
 
@@ -1198,7 +1218,7 @@ if [[ -z "${AE_PATH:-}" ]] || [[ ! -x "$AE_PATH" ]]; then
     exit 1
 fi
 if [[ $# -lt 1 ]]; then
-    echo "Usage: spawn <alias> [prompt]" >&2
+    echo "Usage: spawn <alias>[:<name>] [prompt]" >&2
     exit 1
 fi
 exec "$AE_PATH" _spawn "$META_DIR" "$@"

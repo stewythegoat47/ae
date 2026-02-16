@@ -126,13 +126,9 @@ When run inside an ae session, `stop`, `end`, `discard`, and `status` detect the
 
 ## How it works
 
-1. Reads `~/.ae/config` for agent commands and layout
-2. Creates a tmux session with the main agent (+ workers if configured)
-3. Injects workspace context into each agent's system prompt
-4. Generates helper scripts (`send`, `spawn`) in `~/.ae/sessions/`
-5. Attaches you to the session
+Each agent gets a workspace context injected into its system prompt (Claude Code's `--append-system-prompt`, Codex's `developer_instructions`). That context tells it who the other agents are, how to reach them by name, and how to spawn new ones. The actual communication happens through simple shell helpers (`send`, `spawn`) that ae generates in `~/.ae/sessions/` -- agents call them like any other CLI tool.
 
-Agents communicate by name through the `send` helper. They can spawn new agents on demand. Everything persists in `~/.ae/sessions/` -- your repo stays clean, and all agents resume after a reboot.
+No custom protocols, no frameworks. Just system prompts and bash scripts that agents already know how to use.
 
 ## Requirements
 

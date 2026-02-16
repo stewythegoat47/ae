@@ -171,7 +171,7 @@ sleep 1
 
 # Meta should have spawned.0
 spawned="$(grep '^spawned\.0=' "$HOME/.ae/sessions/test-spawn/meta" 2>/dev/null || echo "")"
-assert_eq "spawn: recorded in meta" "spawned.0=dummy2:spawned-0" "$spawned"
+assert_eq "spawn: recorded in meta" "spawned.0=dummy2:helper-0" "$spawned"
 
 # Should have agent_session.spawned.0
 spawned_session="$(grep '^agent_session\.spawned\.0=' "$HOME/.ae/sessions/test-spawn/meta" 2>/dev/null || echo "")"
@@ -246,7 +246,7 @@ sleep 1
 
 # ae status should show pane output
 status_output="$("$AE" status test-status 2>/dev/null)"
-assert_contains "status: shows agent name" "dummy:main" "$status_output"
+assert_contains "status: shows agent name" "dummy:dummy" "$status_output"
 
 # Stopped session should say stopped
 tmux kill-session -t test-status 2>/dev/null || true
@@ -272,9 +272,9 @@ EOF
 wait_for_session "test-projcfg"
 sleep 1
 
-# Pane title should be ae:dummy2:main (from project config, not global dummy)
+# Pane title should be ae:dummy2:dummy2 (from project config, name defaults to alias)
 pane_title="$(tmux list-panes -t test-projcfg -F '#{pane_title}' 2>/dev/null | head -1)"
-assert_eq "projcfg: local config overrides main" "ae:dummy2:main" "$pane_title"
+assert_eq "projcfg: local config overrides main" "ae:dummy2:dummy2" "$pane_title"
 
 # Clean up
 "$AE" discard test-projcfg 2>/dev/null || true

@@ -70,8 +70,8 @@ ae help                Show usage
 By default, `ae` starts with just the main agent. Spawn more on demand:
 
 ```bash
-~/.ae/sessions/<session>/spawn codex                          # spawn with default prompt
-~/.ae/sessions/<session>/spawn codex "Review changes in src/"  # spawn with custom prompt
+~/.ae/sessions/<session>/spawn codex:reviewer "Review changes in src/"
+~/.ae/sessions/<session>/spawn claude:pair-programmer "Help me refactor auth"
 ```
 
 The spawn helper:
@@ -116,7 +116,7 @@ codex = "codex --yolo -m gpt-5.3-codex -c model_reasoning_effort=high"
 opencode = "opencode"
 
 [workspace]
-main = claude
+main = claude:lead
 layout = vertical
 ```
 
@@ -126,18 +126,20 @@ Define any number of agents as aliases. The value is the full shell command to l
 
 ### Workspace
 
-| Key       | Description                                                | Default    |
-|-----------|------------------------------------------------------------|------------|
-| `main`    | Agent alias for the primary pane                           | `claude`   |
-| `workers` | Comma-separated aliases for agents launched at startup     | *(empty)*  |
-| `layout`  | `vertical` (side-by-side) or `horizontal` (stacked)        | `vertical` |
-| `copy`    | `local`, `full` (cp -a), or `git` (worktree)              | `local`    |
+| Key       | Description                                                | Default        |
+|-----------|------------------------------------------------------------|-----------     |
+| `main`    | `alias[:name]` for the primary pane                        | `claude:lead`  |
+| `workers` | Comma-separated `alias[:name]` for agents at startup       | *(empty)*      |
+| `layout`  | `vertical` (side-by-side) or `horizontal` (stacked)        | `vertical`     |
+| `copy`    | `local`, `full` (cp -a), or `git` (worktree)              | `local`        |
+
+Names appear in pane borders and are used for inter-agent communication (`send "claude:lead" "message"`). If no name is given, the alias is used as the name.
 
 ### Examples
 
 Pre-launch workers at startup (optional):
 ```toml
-workers = codex, opencode
+workers = codex:reviewer, opencode:tester
 ```
 
 Stacked layout:
@@ -171,16 +173,16 @@ Add another agent to this workspace:
 
 Session state (helpers, manifest, metadata) lives in `~/.ae/sessions/` — working directories stay clean.
 
-Each agent starts with a prompt to read this file. From there, any agent can:
+Each agent gets ae workspace context injected into its system prompt. From there, any agent can:
 
-**Send a message to another agent:**
+**Send a message to another agent by name:**
 ```bash
-~/.ae/sessions/<session>/send "%1" "Review the changes in src/auth.ts"
+~/.ae/sessions/<session>/send "claude:lead" "Review the changes in src/auth.ts"
 ```
 
 **Spawn another agent:**
 ```bash
-~/.ae/sessions/<session>/spawn codex "Review these changes"
+~/.ae/sessions/<session>/spawn codex:reviewer "Review these changes"
 ```
 
 **Check what another agent is doing:**

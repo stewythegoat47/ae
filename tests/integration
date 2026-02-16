@@ -7,7 +7,7 @@ set -euo pipefail
 PASS=0
 FAIL=0
 ERRORS=()
-AE="$(cd "$(dirname "$0")" && pwd)/ae"
+AE="$(cd "$(dirname "$0")/.." && pwd)/ae"
 
 # Isolated environment
 TMPDIR="$(mktemp -d)"
@@ -235,6 +235,49 @@ else
     # Worktree creation may fail in some environments (nested git)
     PASS=$((PASS + 2))  # skip these tests gracefully
 fi
+
+# ── Test 6: ae status ──────────────────────────────────────────────
+
+REPO6="$(setup_repo)"
+(cd "$REPO6" && "$AE" --local test-status &) 2>/dev/null
+wait_for_session "test-status"
+sleep 1
+
+# ae status should show pane output
+status_output="$("$AE" status test-status 2>/dev/null)"
+assert_contains "status: shows pane title" "ae:" "$status_output"
+
+# Stopped session should say stopped
+tmux kill-session -t test-status 2>/dev/null || true
+sleep 0.5
+status_output="$("$AE" status test-status 2>/dev/null)"
+assert_contains "status: stopped session" "stopped" "$status_output"
+
+# Clean up
+"$AE" discard test-status 2>/dev/null || true
+sleep 0.5
+
+# ── Test 7: Per-project config override ───────────────────────────
+
+REPO7="$(setup_repo)"
+# Create a per-project config that overrides main agent
+mkdir -p "$REPO7/.ae"
+cat > "$REPO7/.ae/config" <<'EOF'
+[workspace]
+main = dummy2
+EOF
+
+(cd "$REPO7" && "$AE" --local test-projcfg &) 2>/dev/null
+wait_for_session "test-projcfg"
+sleep 1
+
+# Pane title should be ae:dummy2 (from project config, not global dummy)
+pane_title="$(tmux list-panes -t test-projcfg -F '#{pane_title}' 2>/dev/null | head -1)"
+assert_eq "projcfg: local config overrides main" "ae:dummy2" "$pane_title"
+
+# Clean up
+"$AE" discard test-projcfg 2>/dev/null || true
+sleep 0.5
 
 # ── Results ──────────────────────────────────────────────────────────
 

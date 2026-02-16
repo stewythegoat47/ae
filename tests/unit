@@ -21,10 +21,10 @@ assert_eq() {
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(strip_session_flags|resume_cmd_from_cmd|inject_session_id|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|default_session_name|sanitize_branch_name)\(\) \{/ { printing=1 }
+    /^(strip_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|default_session_name|sanitize_branch_name)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
-' "$(dirname "$0")/ae")"
+' "$(dirname "$0")/../ae")"
 
 # ── strip_session_flags ──────────────────────────────────────────────
 
@@ -141,6 +141,42 @@ assert_eq "resume: unknown agent → fresh start (clean cmd)" \
 assert_eq "resume: strips old flags before building resume cmd" \
     "claude --model opus --resume new-uuid" \
     "$(resume_cmd_from_cmd "claude --resume old-uuid --model opus" "new-uuid")"
+
+# ── inject_ae_context ────────────────────────────────────────────────
+
+result="$(inject_ae_context "claude --model opus" "/tmp/ae-test" "my-session" "/home/user/project")"
+assert_eq "ae_context: claude gets --append-system-prompt" \
+    "1" \
+    "$([[ "$result" == *"--append-system-prompt"* ]] && echo 1 || echo 0)"
+
+assert_eq "ae_context: contains meta dir" \
+    "1" \
+    "$([[ "$result" == *"/tmp/ae-test/workspace.md"* ]] && echo 1 || echo 0)"
+
+assert_eq "ae_context: contains spawn helper" \
+    "1" \
+    "$([[ "$result" == *"/tmp/ae-test/spawn"* ]] && echo 1 || echo 0)"
+
+assert_eq "ae_context: contains session name" \
+    "1" \
+    "$([[ "$result" == *"my-session"* ]] && echo 1 || echo 0)"
+
+assert_eq "ae_context: contains work dir" \
+    "1" \
+    "$([[ "$result" == *"/home/user/project"* ]] && echo 1 || echo 0)"
+
+result_codex="$(inject_ae_context "codex --yolo" "/tmp/ae-test" "my-session" "/home/user/project")"
+assert_eq "ae_context: codex gets developer_instructions" \
+    "1" \
+    "$([[ "$result_codex" == *"developer_instructions="* ]] && echo 1 || echo 0)"
+
+assert_eq "ae_context: codex contains meta dir" \
+    "1" \
+    "$([[ "$result_codex" == *"/tmp/ae-test/workspace.md"* ]] && echo 1 || echo 0)"
+
+assert_eq "ae_context: unknown agent is passthrough" \
+    "opencode" \
+    "$(inject_ae_context "opencode" "/tmp/ae-test")"
 
 # ── gen_uuid ─────────────────────────────────────────────────────────
 

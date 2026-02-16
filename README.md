@@ -56,10 +56,13 @@ ae --local [name]      Start session in current directory (default)
 ae --copy [name]       Start session with full copy (includes untracked files)
 ae --worktree [name]   Start session with git worktree (tracked files only)
 ae list                List all ae sessions
-ae end <name>          End session: commit, push to ae/<name> branch, clean up
-ae discard <name>      Discard session without saving (destroy worktree/copy)
+ae status [name]       Show recent agent output without attaching
+ae end [name]          End session: commit, push to ae/<name> branch, clean up
+ae discard [name]      Discard session without saving (destroy worktree/copy)
 ae help                Show usage
 ```
+
+`end`, `discard`, and `status` detect the current session automatically when run inside a tmux pane — no name needed.
 
 ## Spawning agents
 
@@ -103,7 +106,7 @@ CLI flags always override the config.
 
 ## Config
 
-`~/.ae/config` is auto-created on first run:
+`~/.ae/config` is auto-created on first run. Per-project overrides go in `.ae/config` in your project directory (local values shadow global).
 
 ```toml
 [agents]
@@ -222,8 +225,8 @@ ae discard all
 - Agents with session support (Claude Code) resume exact conversations; others start fresh
 - On resume, all agents are relaunched (main, workers, and runtime-spawned agents)
 - `ae list` shows running and stopped sessions with agent health (`2/2` = all healthy, `1/2!` = one crashed)
-- `ae end <name>` preserves work (commit + push) then cleans up
-- `ae discard <name>` destroys the session without saving
+- `ae end [name]` preserves work (commit + push) then cleans up
+- `ae discard [name]` destroys the session without saving
 
 ## How it works
 

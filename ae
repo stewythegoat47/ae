@@ -7,6 +7,10 @@ CONFIG_FILE="${CONFIG_DIR}/config"
 WORKTREES_DIR="${CONFIG_DIR}/worktrees"
 SESSIONS_DIR="${CONFIG_DIR}/sessions"
 
+# Per-project config override (optional)
+AE_LOCAL_CONFIG=""
+[[ -f ".ae/config" ]] && AE_LOCAL_CONFIG="$(pwd)/.ae/config"
+
 # Optional: isolated tmux server (for testing or multi-instance use)
 if [[ -n "${AE_TMUX_SERVER:-}" ]]; then
     tmux() { command tmux -L "$AE_TMUX_SERVER" "$@"; }
@@ -14,11 +18,11 @@ fi
 
 # --- Function index ---
 #   Config:     parse_config, get_config
-#   Helpers:    tool_name_from_cmd, tool_kind_from_cmd, default_session_name, tmux_attach, gen_uuid
-#   Resume:     strip_session_flags, resume_cmd_from_cmd, inject_session_id, resolve_agent_session_id
+#   Helpers:    tool_name_from_cmd, tool_kind_from_cmd, default_session_name, tmux_attach, gen_uuid, detect_current_session
+#   Resume:     strip_session_flags, resume_cmd_from_cmd, inject_session_id, inject_ae_context, resolve_agent_session_id
 #   Session:    read_session_meta, list_ae_sessions, iter_stopped_sessions, cleanup_session
 #   End/branch: sanitize_branch_name, resolve_session_workdir, end_session
-#   Commands:   cmd_list, cmd_end, cmd_discard, cmd_help, _cmd_spawn
+#   Commands:   cmd_list, cmd_status, cmd_end, cmd_discard, cmd_help, _cmd_spawn
 #   Manifest:   regenerate_manifest
 #   Launch:     send_agent_cmd, capture_codex_session_id
 
@@ -39,37 +43,45 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
 fi
 
 # Simple INI parser — outputs section.key=value lines
+# Reads global config, then per-project .ae/config (local values shadow global)
 parse_config() {
-    local section=""
-    while IFS= read -r line; do
-        line="$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-        [[ -z "$line" ]] && continue
+    local section="" file
+    for file in "$CONFIG_FILE" "${AE_LOCAL_CONFIG:-}"; do
+        [[ -n "$file" ]] && [[ -f "$file" ]] || continue
+        section=""
+        while IFS= read -r line; do
+            line="$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+            [[ -z "$line" ]] && continue
 
-        if [[ "$line" =~ ^\[([a-zA-Z_]+)\]$ ]]; then
-            section="${BASH_REMATCH[1]}"
-            continue
-        fi
+            if [[ "$line" =~ ^\[([a-zA-Z_]+)\]$ ]]; then
+                section="${BASH_REMATCH[1]}"
+                continue
+            fi
 
-        # Strip comments only outside quoted values
-        if [[ "$line" =~ ^([a-zA-Z_][a-zA-Z0-9_]*)\ *=\ *\"(.*)\"$ ]]; then
-            printf '%s\n' "${section}.${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"
-        elif [[ "$line" =~ ^([a-zA-Z_][a-zA-Z0-9_]*)\ *=\ *(.+)$ ]]; then
-            local val="${BASH_REMATCH[2]}"
-            val="${val%%#*}"
-            val="$(echo "$val" | sed 's/[[:space:]]*$//')"
-            printf '%s\n' "${section}.${BASH_REMATCH[1]}=${val}"
-        else
-            continue
-        fi
-    done < "$CONFIG_FILE"
+            # Strip comments only outside quoted values
+            if [[ "$line" =~ ^([a-zA-Z_][a-zA-Z0-9_]*)\ *=\ *\"(.*)\"$ ]]; then
+                printf '%s\n' "${section}.${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"
+            elif [[ "$line" =~ ^([a-zA-Z_][a-zA-Z0-9_]*)\ *=\ *(.+)$ ]]; then
+                local val="${BASH_REMATCH[2]}"
+                val="${val%%#*}"
+                val="$(echo "$val" | sed 's/[[:space:]]*$//')"
+                printf '%s\n' "${section}.${BASH_REMATCH[1]}=${val}"
+            else
+                continue
+            fi
+        done < "$file"
+    done
 }
 
+# Last match wins — local config overrides global
 get_config() {
-    parse_config | while IFS= read -r entry; do
+    local result=""
+    while IFS= read -r entry; do
         if [[ "$entry" == "${1}="* ]]; then
-            printf '%s' "${entry#*=}"
+            result="${entry#*=}"
         fi
-    done
+    done < <(parse_config)
+    printf '%s' "$result"
 }
 
 # Map command prefix to human-readable tool name
@@ -134,6 +146,23 @@ inject_session_id() {
     fi
 }
 
+# Inject ae workspace context into agent system prompt (survives context compaction)
+# Claude Code: --append-system-prompt; Codex: -c developer_instructions; others: no-op
+inject_ae_context() {
+    local cmd="$1" meta_dir="$2" session="${3:-}" work_dir="${4:-}"
+    local ctx="You are in an ae multi-agent workspace. Session: ${session}. Directory: ${work_dir}. Spawn another agent: ${meta_dir}/spawn <alias> [prompt]. Send a message: ${meta_dir}/send \"<pane_id>\" \"<message>\". Check another agent: tmux capture-pane -t \"<pane_id>\" -p | tail -20. Current agent layout and pane IDs: cat ${meta_dir}/workspace.md. Pane IDs look like %0, %1, etc."
+    local escaped="${ctx//\'/\'\\\'\'}"
+    case "$cmd" in
+        claude*)
+            echo "${cmd} --append-system-prompt '${escaped}'"
+            ;;
+        codex*)
+            echo "${cmd} -c developer_instructions='${escaped}'"
+            ;;
+        *) echo "$cmd" ;;
+    esac
+}
+
 # Generate a UUID (for agent session scoping)
 gen_uuid() {
     if [[ -f /proc/sys/kernel/random/uuid ]]; then
@@ -145,6 +174,19 @@ gen_uuid() {
         echo "ae: install util-linux or uuid-runtime, or ensure /proc is mounted" >&2
         return 1
     fi
+}
+
+# Detect current ae session when running inside tmux (for ae end/discard/status without name)
+detect_current_session() {
+    if [[ -n "${TMUX:-}" ]]; then
+        local session_name
+        session_name="$(tmux display-message -p '#{session_name}' 2>/dev/null)" || return 1
+        if [[ -d "${SESSIONS_DIR}/${session_name}" ]]; then
+            echo "$session_name"
+            return 0
+        fi
+    fi
+    return 1
 }
 
 # Detect tool kind from command (for staleness checks on resume)
@@ -472,12 +514,45 @@ cmd_list() {
     fi
 }
 
+cmd_status() {
+    local target="${1:-}"
+    if [[ -z "$target" ]]; then
+        target="$(detect_current_session 2>/dev/null)" || {
+            echo "Usage: ae status [session-name]" >&2
+            echo "(Run inside an ae tmux session to check status without specifying the name.)" >&2
+            return 1
+        }
+    fi
+    if ! tmux has-session -t "$target" 2>/dev/null; then
+        if [[ -d "${SESSIONS_DIR}/${target}" ]]; then
+            echo "Session '$target' is stopped."
+            return 0
+        fi
+        echo "Session '$target' not found." >&2
+        return 1
+    fi
+    local found=false
+    while IFS=$'\t' read -r pane_id pane_title; do
+        [[ "$pane_title" == ae:* ]] || continue
+        found=true
+        echo "── ${pane_title} (${pane_id}) ──"
+        tmux capture-pane -t "$pane_id" -p 2>/dev/null | grep -v '^$' | tail -15
+        echo ""
+    done < <(tmux list-panes -t "$target" -F '#{pane_id}	#{pane_title}' 2>/dev/null)
+    if [[ "$found" == false ]]; then
+        echo "No agent panes in session '$target'."
+    fi
+}
+
 cmd_end() {
     local target="${1:-}"
     if [[ -z "$target" ]]; then
-        echo "Usage: ae end <session-name>" >&2
-        echo "       ae end all" >&2
-        return 1
+        target="$(detect_current_session 2>/dev/null)" || {
+            echo "Usage: ae end [session-name]" >&2
+            echo "       ae end all" >&2
+            echo "(Run inside an ae tmux session to end it without specifying the name.)" >&2
+            return 1
+        }
     fi
     if [[ "$target" == "all" ]]; then
         local found=false failures=0
@@ -517,9 +592,12 @@ cmd_end() {
 cmd_discard() {
     local target="${1:-}"
     if [[ -z "$target" ]]; then
-        echo "Usage: ae discard <session-name>" >&2
-        echo "       ae discard all" >&2
-        return 1
+        target="$(detect_current_session 2>/dev/null)" || {
+            echo "Usage: ae discard [session-name]" >&2
+            echo "       ae discard all" >&2
+            echo "(Run inside an ae tmux session to discard it without specifying the name.)" >&2
+            return 1
+        }
     fi
     if [[ "$target" == "all" ]]; then
         local found=false
@@ -570,14 +648,16 @@ cmd_help() {
     echo "  ae --copy [name]       Start session with full copy (includes untracked files)"
     echo "  ae --worktree [name]   Start session with git worktree (tracked files only)"
     echo "  ae list                List all ae sessions"
-    echo "  ae end <name>          End a session: commit, push, clean up (or 'ae end all')"
-    echo "  ae discard <name>      Discard a session without saving (or 'ae discard all')"
+    echo "  ae status [name]       Show recent agent output without attaching"
+    echo "  ae end [name]          End a session: commit, push, clean up (or 'ae end all')"
+    echo "  ae discard [name]      Discard a session without saving (or 'ae discard all')"
     echo "  ae help                Show this help"
     echo ""
     echo "Modes: --local (default), --copy (full cp -a), --worktree (git worktree)."
     echo "Sessions persist across reboots. Agents with session support resume conversations; others start fresh."
+    echo "When inside an ae session, end/discard/status work without specifying the name."
     echo ""
-    echo "Config: ~/.ae/config"
+    echo "Config: ~/.ae/config (per-project override: .ae/config in project dir)"
 }
 
 # Internal: spawn a new agent pane (called via spawn helper → ae _spawn)
@@ -606,6 +686,11 @@ _cmd_spawn() {
     fi
 
     CONFIG_FILE="$config_file"
+    # Wire up per-project config from session's origin directory
+    AE_LOCAL_CONFIG=""
+    if [[ -n "$origin" ]] && [[ -f "${origin}/.ae/config" ]]; then
+        AE_LOCAL_CONFIG="${origin}/.ae/config"
+    fi
     local cmd
     cmd="$(get_config "agents.${alias_name}")"
     if [[ -z "$cmd" ]]; then
@@ -647,9 +732,10 @@ _cmd_spawn() {
     # Regenerate workspace.md from live panes
     regenerate_manifest "$session" "$work_dir" "$origin" "$mode" "$main_pane" "$meta_dir"
 
-    # Launch agent with session-scoped ID
+    # Launch agent with session-scoped ID and ae workspace context
     local scoped_cmd
     scoped_cmd="$(inject_session_id "$cmd" "$session_id")"
+    scoped_cmd="$(inject_ae_context "$scoped_cmd" "$meta_dir" "$session" "$work_dir")"
     tmux send-keys -t "$pane_id" "$scoped_cmd" C-m
 
     # Post-launch: capture codex session ID if needed
@@ -672,6 +758,7 @@ _cmd_spawn() {
 # --- Dispatcher ---
 case "${1:-}" in
     list|ls)        cmd_list; exit 0 ;;
+    status)         cmd_status "${2:-}"; exit $? ;;
     end)            cmd_end "${2:-}"; exit $? ;;
     discard)        cmd_discard "${2:-}"; exit $? ;;
     _spawn)         _cmd_spawn "${@:2}"; exit $? ;;
@@ -1116,33 +1203,36 @@ send_agent_cmd() {
 }
 
 if [[ "$RESUMING" == true ]]; then
-    INITIAL_PROMPT="Resumed ae workspace after restart. Pane IDs may have changed. Re-read ${AE_META}/workspace.md for updated agent targets and continue where you left off."
+    INITIAL_PROMPT="Resumed after restart. Read ${AE_META}/workspace.md for current pane IDs and continue where you left off."
 
     # Resume: use session-scoped resume commands (exact conversation, not CWD heuristic)
     MAIN_RESUME="$(resume_cmd_from_cmd "$MAIN_CMD" "$MAIN_SESSION_ID")"
+    MAIN_RESUME="$(inject_ae_context "$MAIN_RESUME" "$AE_META" "$SESSION" "$WORK_DIR")"
     send_agent_cmd "${PANE_IDS[0]}" "$MAIN_RESUME" "$INITIAL_PROMPT"
     for i in "${!WORKER_CMDS[@]}"; do
         idx=$(( i + 1 ))
         WORKER_RESUME="$(resume_cmd_from_cmd "${WORKER_CMDS[$i]}" "${WORKER_SESSION_IDS[$i]:-}")"
+        WORKER_RESUME="$(inject_ae_context "$WORKER_RESUME" "$AE_META" "$SESSION" "$WORK_DIR")"
         send_agent_cmd "${PANE_IDS[$idx]}" "$WORKER_RESUME" "$INITIAL_PROMPT"
     done
     # Resume spawned agents
     for i in "${!SPAWNED_CMDS[@]}"; do
         sidx=$(( ${#WORKER_CMDS[@]} + i + 1 ))
         SPAWNED_RESUME="$(resume_cmd_from_cmd "${SPAWNED_CMDS[$i]}" "${SPAWNED_SESSION_IDS[$i]:-}")"
+        SPAWNED_RESUME="$(inject_ae_context "$SPAWNED_RESUME" "$AE_META" "$SESSION" "$WORK_DIR")"
         send_agent_cmd "${PANE_IDS[$sidx]}" "$SPAWNED_RESUME" "$INITIAL_PROMPT"
     done
 else
-    INITIAL_PROMPT="You are in an ae workspace. Read ${AE_META}/workspace.md for details.
-To spawn another agent: ${AE_META}/spawn <alias> [prompt]
-Available agents are defined in ${CONFIG_FILE} under [agents]."
+    INITIAL_PROMPT="Read ${AE_META}/workspace.md for the current agent layout and pane IDs."
 
     # Fresh start with session-scoped IDs (enables targeted resume later)
     SCOPED_MAIN="$(inject_session_id "$MAIN_CMD" "$MAIN_SESSION_ID")"
+    SCOPED_MAIN="$(inject_ae_context "$SCOPED_MAIN" "$AE_META" "$SESSION" "$WORK_DIR")"
     send_agent_cmd "${PANE_IDS[0]}" "$SCOPED_MAIN" "$INITIAL_PROMPT"
     for i in "${!WORKER_CMDS[@]}"; do
         idx=$(( i + 1 ))
         SCOPED_WORKER="$(inject_session_id "${WORKER_CMDS[$i]}" "${WORKER_SESSION_IDS[$i]:-}")"
+        SCOPED_WORKER="$(inject_ae_context "$SCOPED_WORKER" "$AE_META" "$SESSION" "$WORK_DIR")"
         send_agent_cmd "${PANE_IDS[$idx]}" "$SCOPED_WORKER" "$INITIAL_PROMPT"
     done
 fi

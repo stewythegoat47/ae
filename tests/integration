@@ -93,6 +93,7 @@ wait_for_session() {
 REPO="$(setup_repo)"
 (cd "$REPO" && "$AE" --local test-life &) 2>/dev/null
 wait_for_session "test-life"
+sleep 1  # let session setup complete (meta, manifest)
 
 # Session should be running
 assert_eq "lifecycle: tmux session exists" "0" "$(tmux has-session -t test-life 2>/dev/null; echo $?)"

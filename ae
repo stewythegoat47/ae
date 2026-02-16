@@ -1218,22 +1218,28 @@ send_agent_cmd() {
             # codex resume doesn't accept inline prompts — launch, then send prompt as input
             # Only send prompt if codex is still running (avoids shell execution on resume failure)
             tmux send-keys -t "$pane" "$cmd" C-m
-            (sleep 3 && \
-                if tmux list-panes -F '#{pane_id} #{pane_current_command}' | grep -q "^${pane} codex$"; then
-                    local buf="ae-launch-$$-${pane}"
-                    tmux select-pane -t "$pane"
-                    tmux set-buffer -b "$buf" -- "$prompt"
-                    tmux paste-buffer -d -b "$buf" -t "$pane"
-                    sleep 0.1
-                    tmux send-keys -t "$pane" Enter
-                fi
-            ) &
+            if [[ -n "$prompt" ]]; then
+                (sleep 3 && \
+                    if tmux list-panes -F '#{pane_id} #{pane_current_command}' | grep -q "^${pane} codex$"; then
+                        local buf="ae-launch-$$-${pane}"
+                        tmux select-pane -t "$pane"
+                        tmux set-buffer -b "$buf" -- "$prompt"
+                        tmux paste-buffer -d -b "$buf" -t "$pane"
+                        sleep 0.1
+                        tmux send-keys -t "$pane" Enter
+                    fi
+                ) &
+            fi
             ;;
         *)
-            # Buffer-paste avoids tmux escaping issues; shell-escape single quotes in prompt
-            local escaped_prompt="${prompt//\'/\'\\\'\'}"
             local buf="ae-launch-$$-${pane}"
-            tmux set-buffer -b "$buf" -- "${cmd} '${escaped_prompt}'"
+            if [[ -n "$prompt" ]]; then
+                # Buffer-paste avoids tmux escaping issues; shell-escape single quotes in prompt
+                local escaped_prompt="${prompt//\'/\'\\\'\'}"
+                tmux set-buffer -b "$buf" -- "${cmd} '${escaped_prompt}'"
+            else
+                tmux set-buffer -b "$buf" -- "$cmd"
+            fi
             tmux paste-buffer -d -b "$buf" -t "$pane"
             tmux send-keys -t "$pane" C-m
             ;;
@@ -1261,7 +1267,7 @@ if [[ "$RESUMING" == true ]]; then
         send_agent_cmd "${PANE_IDS[$sidx]}" "$SPAWNED_RESUME" "$INITIAL_PROMPT"
     done
 else
-    INITIAL_PROMPT="Read ${AE_META}/workspace.md for the current agent layout and pane IDs."
+    INITIAL_PROMPT=""  # system prompt has all ae context; agent starts interactive
 
     # Fresh start with session-scoped IDs (enables targeted resume later)
     SCOPED_MAIN="$(inject_session_id "$MAIN_CMD" "$MAIN_SESSION_ID")"

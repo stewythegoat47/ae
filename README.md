@@ -5,21 +5,17 @@
 [![tmux](https://img.shields.io/badge/requires-tmux-1BB91F.svg)](https://github.com/tmux/tmux)
 [![Install](https://img.shields.io/badge/install-curl%20%7C%20bash-orange.svg)](#install)
 
-**ae** -- one command to run AI coding agents in tmux. Start a session, spawn agents, shut down, come back -- everything resumes.
+**ae** runs AI coding agents side-by-side in tmux. They know about each other, communicate by name, and survive reboots. One bash script, zero dependencies.
 
-A single bash script. No frameworks, no runtimes, no dependencies beyond bash, tmux, and git. Just the plumbing to make agentic engineering productive and frictionless.
+Works with [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [OpenCode](https://github.com/opencode-ai/opencode), or any CLI tool.
 
-```
-+---------------------------+---------------------------+
-|  claude (claude code)     |  codex                    |
-|                           |                           |
-|  > Reading workspace...   |  > Spawned into session.  |
-|  I'll spawn codex to      |  Reading workspace.md...  |
-|  review my changes.       |  I see claude in pane %0. |
-+---------------------------+---------------------------+
-```
+## Why ae
 
-Agents know about each other. They can send messages, peek at output, and coordinate -- all through tmux.
+- **One command** -- `ae` starts a session, `ae` reattaches. That's the whole workflow.
+- **Agents talk to each other** -- each agent gets workspace context injected into its system prompt. They send messages by name, spawn new agents, and coordinate without manual wiring.
+- **Everything survives reboots** -- sessions, spawned agents, conversation history. Pick up exactly where you left off.
+- **Nothing touches your repo** -- session state lives in `~/.ae/sessions/`. Your working directory stays clean.
+- **Single bash script** -- no frameworks, no runtimes, no abstractions. Just bash, tmux, and git.
 
 ## Install
 
@@ -43,71 +39,48 @@ cd ~/projects/my-app
 ae
 ```
 
-That's it. First run creates a tmux session with your main agent. Spawn more agents on demand from within the session.
+First run creates `~/.ae/config` with sensible defaults and launches your main agent in tmux. Detach with `Ctrl+b d` -- agents keep running in the background.
 
-Detach with `Ctrl+b d`. Agents keep running in the background.
+## What you can do
 
-## Commands
-
-```
-ae                     Start or reattach default session (local)
-ae <name>              Start or reattach a named session
-ae --local [name]      Start session in current directory (default)
-ae --copy [name]       Start session with full copy (includes untracked files)
-ae --worktree [name]   Start session with git worktree (tracked files only)
-ae list                List all ae sessions
-ae status [name]       Show recent agent output without attaching
-ae stop [name]         Stop session, keep state for resume later
-ae end [name]          End session: commit, push to ae/<name> branch, clean up
-ae discard [name]      Discard session without saving (destroy worktree/copy)
-ae help                Show usage
-```
-
-`stop`, `end`, `discard`, and `status` detect the current session automatically when run inside a tmux pane — no name needed.
-
-## Spawning agents
-
-By default, `ae` starts with just the main agent. Spawn more on demand:
-
+**Start a session and let agents collaborate:**
 ```bash
-~/.ae/sessions/<session>/spawn codex:reviewer "Review changes in src/"
-~/.ae/sessions/<session>/spawn claude:pair-programmer "Help me refactor auth"
+ae my-feature                  # named session
+ae                             # default session (named after directory)
 ```
 
-The spawn helper:
-1. Looks up the agent command from `~/.ae/config`
-2. Opens a new tmux pane
-3. Updates `workspace.md` so all agents see each other
-4. Launches the agent with the prompt
-
-Spawned agents are persistent -- they survive reboots. Run `ae <name>` again and all agents (main, workers, and spawned) resume with their previous conversation context.
-
-## Modes
-
-| Mode | Flag | Description |
-|------|------|-------------|
-| **local** | `--local` | Work directly in the current directory. No copy, no overhead. Default. |
-| **copy** | `--copy` | Full `cp -a` copy. Includes untracked files (node_modules, .venv, etc.). |
-| **worktree** | `--worktree` | Git worktree (detached HEAD). Fast, shares `.git`, tracked files only. |
-
-All sessions persist across reboots. Run `ae <name>` again to resume agents with their previous conversation context.
-
+**Spawn agents from within a session (or let your main agent do it):**
 ```bash
-ae --copy my-rework       # full copy for heavy dependency work
-ae --local quick-fix      # no copy, just orchestrate agents here
+spawn codex:reviewer "Review the changes in src/"
+spawn claude:pair-programmer "Help me refactor the auth module"
 ```
 
-Set the default in config:
-```toml
-[workspace]
-copy = full    # or "local" (default) or "git"
+Agents pick descriptive names and address each other directly:
+```bash
+send "claude:lead" "I found a bug in auth.ts, check line 42"
+send "codex:reviewer" "Looks good, merge it"
 ```
 
-CLI flags always override the config.
+**Come back after a reboot:**
+```bash
+ae my-feature                  # all agents resume with their conversation history
+```
+
+**Check on agents without attaching:**
+```bash
+ae status my-feature           # see recent output from all agents
+ae list                        # all sessions with agent health (2/2 or 1/2!)
+```
+
+**Finish up:**
+```bash
+ae end my-feature              # commit + push to ae/my-feature branch, clean up
+ae discard my-experiment       # throw away without saving
+```
 
 ## Config
 
-`~/.ae/config` is auto-created on first run. Per-project overrides go in `.ae/config` in your project directory (local values shadow global).
+`~/.ae/config` is auto-created on first run. Per-project overrides go in `.ae/config` in your project directory.
 
 ```toml
 [agents]
@@ -120,139 +93,52 @@ main = claude:lead
 layout = vertical
 ```
 
-### Agents
+**`[agents]`** -- register any CLI tool as an agent alias. The value is the shell command to launch it.
 
-Define any number of agents as aliases. The value is the full shell command to launch the agent.
+**`[workspace]`** -- control the session layout:
 
-### Workspace
+| Key       | Description                                          | Default       |
+|-----------|------------------------------------------------------|---------------|
+| `main`    | `alias:name` for the primary agent                   | `claude:lead` |
+| `workers` | Comma-separated agents launched at startup           | *(empty)*     |
+| `layout`  | `vertical` (side-by-side) or `horizontal` (stacked)  | `vertical`    |
+| `copy`    | `local`, `full` (cp -a), or `git` (worktree)         | `local`       |
 
-| Key       | Description                                                | Default        |
-|-----------|------------------------------------------------------------|-----------     |
-| `main`    | `alias[:name]` for the primary pane                        | `claude:lead`  |
-| `workers` | Comma-separated `alias[:name]` for agents at startup       | *(empty)*      |
-| `layout`  | `vertical` (side-by-side) or `horizontal` (stacked)        | `vertical`     |
-| `copy`    | `local`, `full` (cp -a), or `git` (worktree)              | `local`        |
+Names show in pane borders and are how agents address each other.
 
-Names appear in pane borders and are used for inter-agent communication (`send "claude:lead" "message"`). If no name is given, the alias is used as the name.
-
-### Examples
-
-Pre-launch workers at startup (optional):
+**Pre-launch multiple agents:**
 ```toml
 workers = codex:reviewer, opencode:tester
 ```
 
-Stacked layout:
-```toml
-layout = horizontal
+## Commands
+
+```
+ae [name]              Start or reattach a session
+ae list                List all sessions with agent health
+ae status [name]       Show agent output without attaching
+ae stop [name]         Pause session, keep state for later
+ae end [name]          Commit, push to ae/<name> branch, clean up
+ae discard [name]      Destroy session without saving
 ```
 
-## How agents communicate
-
-On session creation, `ae` writes `~/.ae/sessions/<session>/workspace.md`:
-
-```markdown
-# ae workspace
-
-Session: ae-projects-my-app-abc123
-Directory: /home/user/.ae/worktrees/ae-projects-my-app-abc123
-Mode: git
-
-## Agents
-
-| Alias  | Tool        | Role   | tmux target |
-|--------|-------------|--------|-------------|
-| claude | claude code | main   | %0          |
-| codex  | codex       | worker | %1          |
-
-## Spawn
-
-Add another agent to this workspace:
-~/.ae/sessions/<session>/spawn <alias> [prompt]
-```
-
-Session state (helpers, manifest, metadata) lives in `~/.ae/sessions/` — working directories stay clean.
-
-Each agent gets ae workspace context injected into its system prompt. From there, any agent can:
-
-**Send a message to another agent by name:**
-```bash
-~/.ae/sessions/<session>/send "claude:lead" "Review the changes in src/auth.ts"
-```
-
-**Spawn another agent:**
-```bash
-~/.ae/sessions/<session>/spawn codex:reviewer "Review these changes"
-```
-
-**Check what another agent is doing:**
-```bash
-tmux capture-pane -t "%1" -p | tail -20
-```
-
-The human sees all panes and can type in any of them.
-
-## Ending sessions
-
-When you're done, `ae end` commits any uncommitted work, pushes it to a branch, and cleans up:
-
-```bash
-ae end my-feature        # commit + push to origin/ae/my-feature, then remove worktree
-ae end all               # end all sessions
-```
-
-What `ae end` does (worktree/copy mode with git):
-1. `git add -A && git commit` if there are uncommitted changes
-2. `git push -u origin HEAD:refs/heads/ae/<session>` if there are unpushed commits
-3. Kill the tmux session and remove the worktree/copy
-
-If the push fails, the session is **preserved** -- nothing is deleted. Fix the issue and retry.
-
-For local mode, `ae end` just kills the tmux session (files are already in your project directory).
-
-To throw away a session without saving:
-
-```bash
-ae discard my-experiment   # destroy without commit/push
-ae discard all
-```
-
-## Session management
-
-- `ae` with no arguments creates a default session named after the directory
-- `ae self-learning` creates a session named `self-learning` -- you pick the name
-- Multiple named sessions can run in the same directory
-- `ae <name>` from anywhere reattaches if the session exists
-- Sessions survive terminal close (tmux runs in background)
-- **All sessions survive reboot** -- run `ae <name>` again to resume agents with their previous conversation context
-- Agents with session support (Claude Code) resume exact conversations; others start fresh
-- On resume, all agents are relaunched (main, workers, and runtime-spawned agents)
-- `ae list` shows running and stopped sessions with agent health (`2/2` = all healthy, `1/2!` = one crashed)
-- `ae end [name]` preserves work (commit + push) then cleans up
-- `ae discard [name]` destroys the session without saving
+When run inside an ae session, `stop`, `end`, `discard`, and `status` detect the current session automatically.
 
 ## How it works
 
-1. Validates `~/.ae/config`
-2. Creates a git worktree, full copy, or uses the current directory (local mode)
-3. Creates a tmux session with the main agent (+ workers if configured)
-4. Generates helper scripts and workspace manifest in `~/.ae/sessions/`
-5. Launches agents with a prompt pointing to the manifest
-6. Attaches you to the session
+1. Reads `~/.ae/config` for agent commands and layout
+2. Creates a tmux session with the main agent (+ workers if configured)
+3. Injects workspace context into each agent's system prompt
+4. Generates helper scripts (`send`, `spawn`) in `~/.ae/sessions/`
+5. Attaches you to the session
 
-In worktree/copy mode, agents work on a separate directory. When done, `ae end` commits and pushes the work, then cleans up. After a reboot, run `ae <name>` again to resume. In local mode, agents work directly on the original files.
+Agents communicate by name through the `send` helper. They can spawn new agents on demand. Everything persists in `~/.ae/sessions/` -- your repo stays clean, and all agents resume after a reboot.
 
 ## Requirements
 
 - [tmux](https://github.com/tmux/tmux)
-- [git](https://git-scm.com/) (for worktree mode and `ae end` push; not needed with `--copy --local`)
+- [git](https://git-scm.com/)
 - At least one AI coding agent ([Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [OpenCode](https://github.com/opencode-ai/opencode), or any CLI tool)
-
-## Environment variables
-
-| Variable | Description |
-|----------|-------------|
-| `AE_TMUX_SERVER` | Use an isolated tmux server (e.g., `AE_TMUX_SERVER=work ae foo`). Useful for separating ae from personal tmux sessions. |
 
 ## License
 

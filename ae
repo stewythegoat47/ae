@@ -1247,7 +1247,7 @@ send_agent_cmd() {
 }
 
 if [[ "$RESUMING" == true ]]; then
-    INITIAL_PROMPT="Resumed after restart. Read ${AE_META}/workspace.md for current pane IDs and continue where you left off."
+    INITIAL_PROMPT=""  # system prompt has all ae context; agent resumes interactive
 
     # Resume: use session-scoped resume commands (exact conversation, not CWD heuristic)
     MAIN_RESUME="$(resume_cmd_from_cmd "$MAIN_CMD" "$MAIN_SESSION_ID")"

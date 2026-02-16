@@ -792,6 +792,94 @@ _cmd_spawn() {
     echo "Spawned $alias_name in pane $pane_id"
 }
 
+# Regenerate workspace.md from live tmux pane state
+# Scans panes with ae: title prefix, builds agent table
+regenerate_manifest() {
+    local sess="$1" wdir="$2" origin="$3" mode="$4" main_pane="$5" sessions_dir="$6"
+    local manifest="${sessions_dir}/workspace.md"
+
+    # Describe copy mode
+    local copy_desc
+    case "$mode" in
+        git)   copy_desc="You are working on a git worktree (detached HEAD from the origin). Push to remote and merge from there." ;;
+        full)  copy_desc="You are working on a full copy of the project. Push to remote and merge from there." ;;
+        local) copy_desc="You are working directly in the project directory (local mode). Changes affect the original files immediately." ;;
+    esac
+
+    # Build agent rows from live panes (only ae:-prefixed titles)
+    local agent_rows=""
+    while IFS=$'\t' read -r pane_id pane_title; do
+        [[ "$pane_title" == ae:* ]] || continue
+        local alias_name="${pane_title#ae:}"
+        local role="worker"
+        if [[ "$pane_id" == "$main_pane" ]]; then
+            role="main"
+        fi
+        local cmd tool_label
+        cmd="$(get_config "agents.${alias_name}")"
+        tool_label="$(tool_name_from_cmd "${cmd:-$alias_name}")"
+        agent_rows="${agent_rows}| ${alias_name} | ${tool_label} | ${role} | ${pane_id} |
+"
+    done < <(tmux list-panes -t "$sess" -F '#{pane_id}	#{pane_title}' 2>/dev/null)
+
+    # Collect available aliases from config for spawn section
+    local available_aliases=""
+    while IFS= read -r entry; do
+        if [[ "$entry" == agents.* ]]; then
+            local aname="${entry%%=*}"
+            aname="${aname#agents.}"
+            if [[ -n "$available_aliases" ]]; then
+                available_aliases="${available_aliases}, ${aname}"
+            else
+                available_aliases="$aname"
+            fi
+        fi
+    done < <(parse_config)
+
+    cat > "$manifest" <<EOF
+# ae workspace
+
+Session: ${sess}
+Origin: ${origin}
+Directory: ${wdir}
+Mode: ${mode}
+
+${copy_desc}
+
+## Agents
+
+| Alias | Tool | Role | tmux target |
+|-------|------|------|-------------|
+${agent_rows}
+## Communication
+
+Send a message to another agent (sends + presses Enter automatically):
+\`\`\`bash
+${sessions_dir}/send "<tmux target>" "your message"
+\`\`\`
+
+Check another agent's recent output:
+\`\`\`bash
+tmux capture-pane -t "<tmux target>" -p | tail -20
+\`\`\`
+
+## Spawn
+
+Add another agent to this workspace:
+\`\`\`bash
+${sessions_dir}/spawn <alias> [prompt]
+\`\`\`
+
+Available aliases: ${available_aliases} (from ~/.ae/config)
+
+## Rules
+
+- Coordinate file edits -- don't modify the same file simultaneously
+- The human can see all panes and may intervene at any time
+- Always use the send helper above to communicate with other agents (never raw tmux send-keys)
+EOF
+}
+
 # --- Dispatcher ---
 case "${1:-}" in
     list|ls)        cmd_list; exit 0 ;;
@@ -1095,94 +1183,6 @@ sleep 0.1
 tmux send-keys -t "$target" Enter
 SENDEOF
 chmod 0700 "${AE_META}/send"
-
-# Regenerate workspace.md from live tmux pane state
-# Scans panes with ae: title prefix, builds agent table
-regenerate_manifest() {
-    local sess="$1" wdir="$2" origin="$3" mode="$4" main_pane="$5" sessions_dir="$6"
-    local manifest="${sessions_dir}/workspace.md"
-
-    # Describe copy mode
-    local copy_desc
-    case "$mode" in
-        git)   copy_desc="You are working on a git worktree (detached HEAD from the origin). Push to remote and merge from there." ;;
-        full)  copy_desc="You are working on a full copy of the project. Push to remote and merge from there." ;;
-        local) copy_desc="You are working directly in the project directory (local mode). Changes affect the original files immediately." ;;
-    esac
-
-    # Build agent rows from live panes (only ae:-prefixed titles)
-    local agent_rows=""
-    while IFS=$'\t' read -r pane_id pane_title; do
-        [[ "$pane_title" == ae:* ]] || continue
-        local alias_name="${pane_title#ae:}"
-        local role="worker"
-        if [[ "$pane_id" == "$main_pane" ]]; then
-            role="main"
-        fi
-        local cmd tool_label
-        cmd="$(get_config "agents.${alias_name}")"
-        tool_label="$(tool_name_from_cmd "${cmd:-$alias_name}")"
-        agent_rows="${agent_rows}| ${alias_name} | ${tool_label} | ${role} | ${pane_id} |
-"
-    done < <(tmux list-panes -t "$sess" -F '#{pane_id}	#{pane_title}' 2>/dev/null)
-
-    # Collect available aliases from config for spawn section
-    local available_aliases=""
-    while IFS= read -r entry; do
-        if [[ "$entry" == agents.* ]]; then
-            local aname="${entry%%=*}"
-            aname="${aname#agents.}"
-            if [[ -n "$available_aliases" ]]; then
-                available_aliases="${available_aliases}, ${aname}"
-            else
-                available_aliases="$aname"
-            fi
-        fi
-    done < <(parse_config)
-
-    cat > "$manifest" <<EOF
-# ae workspace
-
-Session: ${sess}
-Origin: ${origin}
-Directory: ${wdir}
-Mode: ${mode}
-
-${copy_desc}
-
-## Agents
-
-| Alias | Tool | Role | tmux target |
-|-------|------|------|-------------|
-${agent_rows}
-## Communication
-
-Send a message to another agent (sends + presses Enter automatically):
-\`\`\`bash
-${sessions_dir}/send "<tmux target>" "your message"
-\`\`\`
-
-Check another agent's recent output:
-\`\`\`bash
-tmux capture-pane -t "<tmux target>" -p | tail -20
-\`\`\`
-
-## Spawn
-
-Add another agent to this workspace:
-\`\`\`bash
-${sessions_dir}/spawn <alias> [prompt]
-\`\`\`
-
-Available aliases: ${available_aliases} (from ~/.ae/config)
-
-## Rules
-
-- Coordinate file edits -- don't modify the same file simultaneously
-- The human can see all panes and may intervene at any time
-- Always use the send helper above to communicate with other agents (never raw tmux send-keys)
-EOF
-}
 
 # Helper: spawn <alias> [prompt] — thin wrapper that calls ae _spawn
 cat > "${AE_META}/spawn" <<'SPAWNEOF'

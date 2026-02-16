@@ -22,7 +22,7 @@ fi
 #   Resume:     strip_session_flags, resume_cmd_from_cmd, inject_session_id, inject_ae_context, resolve_agent_session_id
 #   Session:    read_session_meta, list_ae_sessions, iter_stopped_sessions, cleanup_session
 #   End/branch: sanitize_branch_name, resolve_session_workdir, end_session
-#   Commands:   cmd_list, cmd_status, cmd_end, cmd_discard, cmd_help, _cmd_spawn
+#   Commands:   cmd_list, cmd_status, cmd_stop, cmd_end, cmd_discard, cmd_help, _cmd_spawn
 #   Manifest:   regenerate_manifest
 #   Launch:     send_agent_cmd, capture_codex_session_id
 
@@ -544,6 +544,42 @@ cmd_status() {
     fi
 }
 
+cmd_stop() {
+    local target="${1:-}"
+    if [[ -z "$target" ]]; then
+        target="$(detect_current_session 2>/dev/null)" || {
+            echo "Usage: ae stop [session-name]" >&2
+            echo "       ae stop all" >&2
+            echo "(Run inside an ae tmux session to stop it without specifying the name.)" >&2
+            return 1
+        }
+    fi
+    if [[ "$target" == "all" ]]; then
+        local found=false
+        local sessions
+        sessions="$(list_ae_sessions)"
+        if [[ -n "$sessions" ]]; then
+            while IFS= read -r s; do
+                [[ -z "$s" ]] && continue
+                found=true
+                tmux kill-session -t "$s" 2>/dev/null || true
+                echo "Stopped $s"
+            done <<< "$sessions"
+        fi
+        if [[ "$found" == false ]]; then
+            echo "No running ae sessions."
+        fi
+    else
+        if tmux has-session -t "$target" 2>/dev/null; then
+            tmux kill-session -t "$target"
+            echo "Stopped $target"
+        else
+            echo "Session '$target' is not running." >&2
+            return 1
+        fi
+    fi
+}
+
 cmd_end() {
     local target="${1:-}"
     if [[ -z "$target" ]]; then
@@ -649,13 +685,14 @@ cmd_help() {
     echo "  ae --worktree [name]   Start session with git worktree (tracked files only)"
     echo "  ae list                List all ae sessions"
     echo "  ae status [name]       Show recent agent output without attaching"
-    echo "  ae end [name]          End a session: commit, push, clean up (or 'ae end all')"
-    echo "  ae discard [name]      Discard a session without saving (or 'ae discard all')"
+    echo "  ae stop [name]         Stop session, keep state for resume (or 'ae stop all')"
+    echo "  ae end [name]          End session: commit, push, clean up (or 'ae end all')"
+    echo "  ae discard [name]      Discard session without saving (or 'ae discard all')"
     echo "  ae help                Show this help"
     echo ""
     echo "Modes: --local (default), --copy (full cp -a), --worktree (git worktree)."
     echo "Sessions persist across reboots. Agents with session support resume conversations; others start fresh."
-    echo "When inside an ae session, end/discard/status work without specifying the name."
+    echo "When inside an ae session, stop/end/discard/status work without specifying the name."
     echo ""
     echo "Config: ~/.ae/config (per-project override: .ae/config in project dir)"
 }
@@ -759,6 +796,7 @@ _cmd_spawn() {
 case "${1:-}" in
     list|ls)        cmd_list; exit 0 ;;
     status)         cmd_status "${2:-}"; exit $? ;;
+    stop)           cmd_stop "${2:-}"; exit $? ;;
     end)            cmd_end "${2:-}"; exit $? ;;
     discard)        cmd_discard "${2:-}"; exit $? ;;
     _spawn)         _cmd_spawn "${@:2}"; exit $? ;;

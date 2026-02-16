@@ -57,12 +57,13 @@ ae --copy [name]       Start session with full copy (includes untracked files)
 ae --worktree [name]   Start session with git worktree (tracked files only)
 ae list                List all ae sessions
 ae status [name]       Show recent agent output without attaching
+ae stop [name]         Stop session, keep state for resume later
 ae end [name]          End session: commit, push to ae/<name> branch, clean up
 ae discard [name]      Discard session without saving (destroy worktree/copy)
 ae help                Show usage
 ```
 
-`end`, `discard`, and `status` detect the current session automatically when run inside a tmux pane — no name needed.
+`stop`, `end`, `discard`, and `status` detect the current session automatically when run inside a tmux pane — no name needed.
 
 ## Spawning agents
 

@@ -515,14 +515,14 @@ end_session() {
 
 cmd_list() {
     local sessions has_output=false
-    local hdr='%-40s  %-10s  %-8s  %-5s  %s\n'
+    local hdr='%-40s  %-10s  %-8s  %-10s  %-40s  %s\n'
     sessions="$(list_ae_sessions)"
     if [[ -n "$sessions" ]]; then
         has_output=true
-        printf "$hdr" "SESSION" "STATUS" "AGENTS" "MODE" "ORIGIN"
+        printf "$hdr" "SESSION" "STATUS" "AGENTS" "MODE" "ORIGIN" "TARGET"
         while IFS= read -r name; do
             [[ -z "$name" ]] && continue
-            local total=0 alive=0 origin mode health
+            local total=0 alive=0 origin mode health workdir target
             while IFS=$'\t' read -r ae_agent pane_cmd; do
                 [[ -n "$ae_agent" ]] || continue
                 total=$(( total + 1 ))
@@ -537,20 +537,27 @@ cmd_list() {
             mode="$(tmux show-environment -t "$name" AE_MODE 2>/dev/null | sed 's/^AE_MODE=//' || true)"
             mode="${mode:-$(read_session_meta "$name" mode)}"
             mode="${mode:-?}"
-            printf "$hdr" "$name" "running" "$health" "$mode" "$origin"
+            workdir="$(tmux show-environment -t "$name" AE_DIR 2>/dev/null | sed 's/^AE_DIR=//' || true)"
+            workdir="${workdir:-$(read_session_meta "$name" work_dir)}"
+            target="-"
+            [[ "$mode" != "local" && -n "$workdir" ]] && target="$workdir"
+            printf "$hdr" "$name" "running" "$health" "$mode" "$origin" "$target"
         done <<< "$sessions"
     fi
     while IFS= read -r name; do
         if [[ "$has_output" == false ]]; then
-            printf "$hdr" "SESSION" "STATUS" "AGENTS" "MODE" "ORIGIN"
+            printf "$hdr" "SESSION" "STATUS" "AGENTS" "MODE" "ORIGIN" "TARGET"
             has_output=true
         fi
-        local mode origin
+        local mode origin workdir target
         mode="$(read_session_meta "$name" mode)"
         mode="${mode:-?}"
         origin="$(read_session_meta "$name" origin)"
         origin="${origin:--}"
-        printf "$hdr" "$name" "stopped" "-" "$mode" "$origin"
+        workdir="$(read_session_meta "$name" work_dir)"
+        target="-"
+        [[ "$mode" != "local" && -n "$workdir" ]] && target="$workdir"
+        printf "$hdr" "$name" "stopped" "-" "$mode" "$origin" "$target"
     done < <(iter_stopped_sessions)
     if [[ "$has_output" == false ]]; then
         echo "No ae sessions."

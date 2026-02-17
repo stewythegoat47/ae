@@ -25,7 +25,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(parse_config|get_config|strip_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|default_session_name|sanitize_branch_name)\(\) \{/ { printing=1 }
+    /^(parse_config|get_config|build_ae_context|strip_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|default_session_name|sanitize_branch_name)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -217,6 +217,24 @@ assert_eq "ae_context: local instructions override global" \
 assert_eq "ae_context: global instructions shadowed by local" \
     "0" \
     "$([[ "$result_override" == *"global rules"* ]] && echo 1 || echo 0)"
+
+# initial_prompt_for_cmd: empty for claude/codex, context for others
+assert_eq "initial_prompt: empty for claude" \
+    "" \
+    "$(initial_prompt_for_cmd "claude --model opus" "/tmp/ae" "sess" "/home/user")"
+
+assert_eq "initial_prompt: empty for codex" \
+    "" \
+    "$(initial_prompt_for_cmd "codex --yolo" "/tmp/ae" "sess" "/home/user")"
+
+result_opencode="$(initial_prompt_for_cmd "opencode" "/tmp/ae" "sess" "/home/user")"
+assert_eq "initial_prompt: opencode gets context" \
+    "1" \
+    "$([[ "$result_opencode" == *"ae multi-agent workspace"* ]] && echo 1 || echo 0)"
+
+assert_eq "initial_prompt: opencode gets spawn helper path" \
+    "1" \
+    "$([[ "$result_opencode" == *"/tmp/ae/spawn"* ]] && echo 1 || echo 0)"
 
 # ── gen_uuid ─────────────────────────────────────────────────────────
 

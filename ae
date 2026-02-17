@@ -146,14 +146,22 @@ inject_session_id() {
     fi
 }
 
-# Inject ae workspace context into agent system prompt (survives context compaction)
-# Claude Code: --append-system-prompt; Codex: -c developer_instructions; others: no-op
-inject_ae_context() {
-    local cmd="$1" meta_dir="$2" session="${3:-}" work_dir="${4:-}"
+# Build ae workspace context string (shared by inject_ae_context and initial prompt fallback)
+build_ae_context() {
+    local meta_dir="$1" session="${2:-}" work_dir="${3:-}"
     local ctx="You are in an ae multi-agent workspace. Session: ${session}. Directory: ${work_dir}. Spawn another agent: ${meta_dir}/spawn <alias>:<name> [prompt] — always give a descriptive role name (e.g. codex:reviewer, claude:pair-programmer, claude:debugger). Send a message to another agent: ${meta_dir}/send \"<agent_name>\" \"<message>\". Check another agent: cat ${meta_dir}/workspace.md for names and pane IDs, then tmux capture-pane -t \"<pane_id>\" -p | tail -20."
     local user_instr
     user_instr="$(get_config prompt.instructions)"
     [[ -n "$user_instr" ]] && ctx="${ctx} --- Workspace instructions: ${user_instr}"
+    printf '%s' "$ctx"
+}
+
+# Inject ae workspace context into agent system prompt (survives context compaction)
+# Claude Code: --append-system-prompt; Codex: -c developer_instructions; others: initial prompt
+inject_ae_context() {
+    local cmd="$1" meta_dir="$2" session="${3:-}" work_dir="${4:-}"
+    local ctx
+    ctx="$(build_ae_context "$meta_dir" "$session" "$work_dir")"
     local escaped="${ctx//\'/\'\\\'\'}"
     case "$cmd" in
         claude*)
@@ -163,6 +171,20 @@ inject_ae_context() {
             echo "${cmd} -c developer_instructions='${escaped}'"
             ;;
         *) echo "$cmd" ;;
+    esac
+}
+
+# For agents without system prompt injection, return context as emphasized initial message
+initial_prompt_for_cmd() {
+    local cmd="$1" meta_dir="$2" session="${3:-}" work_dir="${4:-}"
+    case "$cmd" in
+        claude*|codex*) echo "" ;;  # context injected via system prompt flag
+        opencode*)
+            local ctx
+            ctx="$(build_ae_context "$meta_dir" "$session" "$work_dir")"
+            printf '%s' "IMPORTANT — read and internalize these workspace instructions before doing anything else. They apply for the ENTIRE session. ${ctx} Confirm you understood by briefly listing the other agents and available tools (send, spawn)."
+            ;;
+        *) echo "" ;;  # unknown agents: no injection (no reliable delivery method)
     esac
 }
 
@@ -780,24 +802,31 @@ _cmd_spawn() {
     regenerate_manifest "$session" "$work_dir" "$origin" "$mode" "$main_pane" "$meta_dir"
 
     # Launch agent with session-scoped ID and ae workspace context
-    local scoped_cmd
+    local scoped_cmd initial_msg
     scoped_cmd="$(inject_session_id "$cmd" "$session_id")"
     scoped_cmd="$(inject_ae_context "$scoped_cmd" "$meta_dir" "$session" "$work_dir")"
-    tmux send-keys -t "$pane_id" "$scoped_cmd" C-m
+    # For agents without system prompt injection, combine workspace context + spawn prompt
+    initial_msg="$(initial_prompt_for_cmd "$cmd" "$meta_dir" "$session" "$work_dir")"
+    if [[ -n "$initial_msg" ]]; then
+        initial_msg="${initial_msg} --- ${prompt}"
+    fi
+    send_agent_cmd "$pane_id" "$scoped_cmd" "$initial_msg"
 
     # Post-launch: capture codex session ID if needed
     if [[ "$tool_kind" == "codex" ]]; then
         capture_codex_session_id "$pane_id" "$slot" "$meta_dir" &
     fi
 
-    # Inject prompt via buffer paste (safe for any content)
-    sleep 1
-    local buf="ae-spawn-$$"
-    tmux select-pane -t "$pane_id"
-    tmux set-buffer -b "$buf" -- "$prompt"
-    tmux paste-buffer -d -b "$buf" -t "$pane_id"
-    sleep 0.1
-    tmux send-keys -t "$pane_id" Enter
+    # For agents with system prompt injection, send spawn prompt separately
+    if [[ -z "$initial_msg" ]]; then
+        sleep 1
+        local buf="ae-spawn-$$"
+        tmux select-pane -t "$pane_id"
+        tmux set-buffer -b "$buf" -- "$prompt"
+        tmux paste-buffer -d -b "$buf" -t "$pane_id"
+        sleep 0.1
+        tmux send-keys -t "$pane_id" Enter
+    fi
 
     echo "Spawned ${alias_name}:${spawn_name} in pane $pane_id"
 }
@@ -1304,6 +1333,22 @@ send_agent_cmd() {
                 ) &
             fi
             ;;
+        opencode*)
+            # OpenCode has no system prompt flag — launch TUI, then paste context as first message
+            tmux send-keys -t "$pane" "$cmd" C-m
+            if [[ -n "$prompt" ]]; then
+                (sleep 3 && \
+                    if tmux list-panes -F '#{pane_id} #{pane_current_command}' | grep -q "^${pane} opencode$"; then
+                        local buf="ae-launch-$$-${pane}"
+                        tmux select-pane -t "$pane"
+                        tmux set-buffer -b "$buf" -- "$prompt"
+                        tmux paste-buffer -d -b "$buf" -t "$pane"
+                        sleep 0.1
+                        tmux send-keys -t "$pane" Enter
+                    fi
+                ) &
+            fi
+            ;;
         *)
             local buf="ae-launch-$$-${pane}"
             if [[ -n "$prompt" ]]; then
@@ -1320,37 +1365,33 @@ send_agent_cmd() {
 }
 
 if [[ "$RESUMING" == true ]]; then
-    INITIAL_PROMPT=""  # system prompt has all ae context; agent resumes interactive
-
     # Resume: use session-scoped resume commands (exact conversation, not CWD heuristic)
     MAIN_RESUME="$(resume_cmd_from_cmd "$MAIN_CMD" "$MAIN_SESSION_ID")"
     MAIN_RESUME="$(inject_ae_context "$MAIN_RESUME" "$AE_META" "$SESSION" "$WORK_DIR")"
-    send_agent_cmd "${PANE_IDS[0]}" "$MAIN_RESUME" "$INITIAL_PROMPT"
+    send_agent_cmd "${PANE_IDS[0]}" "$MAIN_RESUME" "$(initial_prompt_for_cmd "$MAIN_CMD" "$AE_META" "$SESSION" "$WORK_DIR")"
     for i in "${!WORKER_CMDS[@]}"; do
         idx=$(( i + 1 ))
         WORKER_RESUME="$(resume_cmd_from_cmd "${WORKER_CMDS[$i]}" "${WORKER_SESSION_IDS[$i]:-}")"
         WORKER_RESUME="$(inject_ae_context "$WORKER_RESUME" "$AE_META" "$SESSION" "$WORK_DIR")"
-        send_agent_cmd "${PANE_IDS[$idx]}" "$WORKER_RESUME" "$INITIAL_PROMPT"
+        send_agent_cmd "${PANE_IDS[$idx]}" "$WORKER_RESUME" "$(initial_prompt_for_cmd "${WORKER_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR")"
     done
     # Resume spawned agents
     for i in "${!SPAWNED_CMDS[@]}"; do
         sidx=$(( ${#WORKER_CMDS[@]} + i + 1 ))
         SPAWNED_RESUME="$(resume_cmd_from_cmd "${SPAWNED_CMDS[$i]}" "${SPAWNED_SESSION_IDS[$i]:-}")"
         SPAWNED_RESUME="$(inject_ae_context "$SPAWNED_RESUME" "$AE_META" "$SESSION" "$WORK_DIR")"
-        send_agent_cmd "${PANE_IDS[$sidx]}" "$SPAWNED_RESUME" "$INITIAL_PROMPT"
+        send_agent_cmd "${PANE_IDS[$sidx]}" "$SPAWNED_RESUME" "$(initial_prompt_for_cmd "${SPAWNED_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR")"
     done
 else
-    INITIAL_PROMPT=""  # system prompt has all ae context; agent starts interactive
-
     # Fresh start with session-scoped IDs (enables targeted resume later)
     SCOPED_MAIN="$(inject_session_id "$MAIN_CMD" "$MAIN_SESSION_ID")"
     SCOPED_MAIN="$(inject_ae_context "$SCOPED_MAIN" "$AE_META" "$SESSION" "$WORK_DIR")"
-    send_agent_cmd "${PANE_IDS[0]}" "$SCOPED_MAIN" "$INITIAL_PROMPT"
+    send_agent_cmd "${PANE_IDS[0]}" "$SCOPED_MAIN" "$(initial_prompt_for_cmd "$MAIN_CMD" "$AE_META" "$SESSION" "$WORK_DIR")"
     for i in "${!WORKER_CMDS[@]}"; do
         idx=$(( i + 1 ))
         SCOPED_WORKER="$(inject_session_id "${WORKER_CMDS[$i]}" "${WORKER_SESSION_IDS[$i]:-}")"
         SCOPED_WORKER="$(inject_ae_context "$SCOPED_WORKER" "$AE_META" "$SESSION" "$WORK_DIR")"
-        send_agent_cmd "${PANE_IDS[$idx]}" "$SCOPED_WORKER" "$INITIAL_PROMPT"
+        send_agent_cmd "${PANE_IDS[$idx]}" "$SCOPED_WORKER" "$(initial_prompt_for_cmd "${WORKER_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR")"
     done
 fi
 

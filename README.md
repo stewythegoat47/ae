@@ -78,7 +78,7 @@ ae discard my-experiment       # throw away without saving
 [agents]
 claude = "claude --permission-mode bypassPermissions --model claude-opus-4-6"
 codex = "codex --yolo -m gpt-5.3-codex -c model_reasoning_effort=high"
-opencode = "opencode"
+opencode = "opencode -m google/gemini-3-pro-preview"
 
 [workspace]
 main = claude:lead

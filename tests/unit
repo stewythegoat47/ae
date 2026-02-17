@@ -25,7 +25,7 @@ AE_LOCAL_CONFIG=""
 
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(parse_config|get_config|build_ae_context|strip_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|default_session_name|sanitize_branch_name)\(\) \{/ { printing=1 }
+    /^(parse_config|get_config|build_ae_context|strip_session_flags|strip_gemini_prompt_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|initial_prompt_for_cmd|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|default_session_name|sanitize_branch_name)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -138,6 +138,22 @@ assert_eq "resume: codex with pending → fresh start" \
     "codex --yolo" \
     "$(resume_cmd_from_cmd "codex --yolo" "pending")"
 
+assert_eq "resume: gemini → --resume latest" \
+    "gemini --yolo --resume latest" \
+    "$(resume_cmd_from_cmd "gemini --yolo")"
+
+assert_eq "resume: gemini strips old -i flag with quoted value" \
+    "gemini --yolo --resume latest" \
+    "$(resume_cmd_from_cmd "gemini --yolo -i 'old context with spaces'")"
+
+assert_eq "resume: gemini strips --prompt-interactive" \
+    "gemini --yolo --resume latest" \
+    "$(resume_cmd_from_cmd "gemini --yolo --prompt-interactive 'old context'")"
+
+assert_eq "strip: -i not stripped from non-gemini commands" \
+    "codex --yolo -i input.txt" \
+    "$(strip_session_flags "codex --yolo -i input.txt")"
+
 assert_eq "resume: unknown agent → fresh start (clean cmd)" \
     "opencode" \
     "$(resume_cmd_from_cmd "opencode")"
@@ -177,6 +193,15 @@ assert_eq "ae_context: codex gets developer_instructions" \
 assert_eq "ae_context: codex contains meta dir" \
     "1" \
     "$([[ "$result_codex" == *"/tmp/ae-test/workspace.md"* ]] && echo 1 || echo 0)"
+
+result_gemini="$(inject_ae_context "gemini --yolo" "/tmp/ae-test" "my-session" "/home/user/project")"
+assert_eq "ae_context: gemini gets -i flag" \
+    "1" \
+    "$([[ "$result_gemini" == *" -i '"* ]] && echo 1 || echo 0)"
+
+assert_eq "ae_context: gemini contains workspace context" \
+    "1" \
+    "$([[ "$result_gemini" == *"ae multi-agent workspace"* ]] && echo 1 || echo 0)"
 
 assert_eq "ae_context: unknown agent is passthrough" \
     "opencode" \
@@ -226,6 +251,10 @@ assert_eq "initial_prompt: empty for claude" \
 assert_eq "initial_prompt: empty for codex" \
     "" \
     "$(initial_prompt_for_cmd "codex --yolo" "/tmp/ae" "sess" "/home/user")"
+
+assert_eq "initial_prompt: empty for gemini" \
+    "" \
+    "$(initial_prompt_for_cmd "gemini --yolo" "/tmp/ae" "sess" "/home/user")"
 
 result_opencode="$(initial_prompt_for_cmd "opencode" "/tmp/ae" "sess" "/home/user")"
 assert_eq "initial_prompt: opencode gets context" \

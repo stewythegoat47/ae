@@ -89,6 +89,7 @@ tool_name_from_cmd() {
     case "$1" in
         claude*) echo "claude code" ;;
         codex*)  echo "codex" ;;
+        gemini*) echo "gemini cli" ;;
         opencode*) echo "opencode" ;;
         *)       echo "$1" ;;
     esac
@@ -100,6 +101,15 @@ strip_session_flags() {
         -e 's/\(^\|  *\)--session-id[= ][^ ]*/\1/g' \
         -e 's/\(^\|  *\)--resume[= ][^ ]*/\1/g' \
         -e 's/\(^\|  *\)--continue\(  *\|$\)/\1\2/g' \
+        -e 's/  */ /g; s/^ //; s/ $//'
+}
+
+# Strip gemini prompt injection flags (-i '...' / --prompt-interactive '...')
+# Only called for gemini commands. We control the format: always single-quoted via inject_ae_context.
+strip_gemini_prompt_flags() {
+    echo "$1" | sed \
+        -e "s/ --prompt-interactive '[^']*'//g" \
+        -e "s/ -i '[^']*'//g" \
         -e 's/  */ /g; s/^ //; s/ $//'
 }
 
@@ -125,6 +135,10 @@ resume_cmd_from_cmd() {
             else
                 echo "$clean"  # fresh start (--last is unreliable for concurrent sessions)
             fi
+            ;;
+        gemini*)
+            clean="$(strip_gemini_prompt_flags "$clean")"
+            echo "${clean} --resume latest"  # index-based only, no UUID scoping
             ;;
         *)  echo "$clean" ;;  # fresh start for unknown agents
     esac
@@ -170,6 +184,9 @@ inject_ae_context() {
         codex*)
             echo "${cmd} -c developer_instructions='${escaped}'"
             ;;
+        gemini*)
+            echo "${cmd} -i '${escaped}'"
+            ;;
         *) echo "$cmd" ;;
     esac
 }
@@ -178,7 +195,7 @@ inject_ae_context() {
 initial_prompt_for_cmd() {
     local cmd="$1" meta_dir="$2" session="${3:-}" work_dir="${4:-}"
     case "$cmd" in
-        claude*|codex*) echo "" ;;  # context injected via system prompt flag
+        claude*|codex*|gemini*) echo "" ;;  # context injected via CLI flag
         opencode*)
             local ctx
             ctx="$(build_ae_context "$meta_dir" "$session" "$work_dir")"
@@ -219,6 +236,7 @@ tool_kind_from_cmd() {
     case "$1" in
         claude*)   echo "claude" ;;
         codex*)    echo "codex" ;;
+        gemini*)   echo "gemini" ;;
         opencode*) echo "opencode" ;;
         *)         echo "unknown" ;;
     esac

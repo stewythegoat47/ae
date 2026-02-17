@@ -7,7 +7,7 @@
 
 **ae** runs AI coding agents side-by-side in tmux. They know about each other, communicate by name, and survive reboots. One bash script, zero dependencies.
 
-Works with [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [OpenCode](https://github.com/opencode-ai/opencode), or any CLI tool.
+Works with [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [OpenCode](https://github.com/opencode-ai/opencode), or any CLI tool.
 
 ## Why ae
 
@@ -78,6 +78,7 @@ ae discard my-experiment       # throw away without saving
 [agents]
 claude = "claude --permission-mode bypassPermissions --model claude-opus-4-6"
 codex = "codex --yolo -m gpt-5.3-codex -c model_reasoning_effort=high"
+gemini = "gemini --yolo -m gemini-2.5-pro"
 opencode = "opencode -m google/gemini-3-pro-preview"
 
 [workspace]
@@ -139,7 +140,7 @@ No custom protocols, no frameworks. Just system prompts and bash scripts that ag
 
 - [tmux](https://github.com/tmux/tmux)
 - [git](https://git-scm.com/)
-- At least one AI coding agent ([Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [OpenCode](https://github.com/opencode-ai/opencode), or any CLI tool)
+- At least one AI coding agent ([Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [OpenCode](https://github.com/opencode-ai/opencode), or any CLI tool)
 
 ## License
 

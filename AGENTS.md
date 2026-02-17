@@ -61,6 +61,9 @@ alias = "shell command"
 main = alias
 workers = alias, alias2    # optional, omit for single-agent start
 layout = vertical
+
+[prompt]
+instructions = "Custom instructions injected into agent system prompts"
 ```
 
 That's it. Don't extend the format.

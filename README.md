@@ -83,6 +83,9 @@ opencode = "opencode"
 [workspace]
 main = claude:lead
 layout = vertical
+
+[prompt]
+instructions = "Always write tests. Prefer TypeScript."
 ```
 
 **`[agents]`** -- register any CLI tool as an agent alias. The value is the shell command to launch it.
@@ -97,6 +100,8 @@ layout = vertical
 | `copy`    | Working directory mode (see below)                     | `local`       |
 
 Names show in pane borders and are how agents address each other.
+
+**`[prompt]`** -- custom instructions injected into every agent's system prompt alongside the ae workspace context. Per-project `.ae/config` overrides the global one.
 
 **Copy modes** -- how agents access your code:
 

@@ -19,9 +19,13 @@ assert_eq() {
     fi
 }
 
+# Isolate config from user's real ~/.ae/config
+CONFIG_FILE="/dev/null"
+AE_LOCAL_CONFIG=""
+
 # Extract pure function definitions from ae (matches "func() {" but not "func() ${BODY}" heredoc copies)
 eval "$(awk '
-    /^(strip_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|default_session_name|sanitize_branch_name)\(\) \{/ { printing=1 }
+    /^(parse_config|get_config|strip_session_flags|resume_cmd_from_cmd|inject_session_id|inject_ae_context|gen_uuid|tool_kind_from_cmd|tool_name_from_cmd|default_session_name|sanitize_branch_name)\(\) \{/ { printing=1 }
     printing { print }
     printing && /^\}$/ { printing=0 }
 ' "$(dirname "$0")/../ae")"
@@ -177,6 +181,42 @@ assert_eq "ae_context: codex contains meta dir" \
 assert_eq "ae_context: unknown agent is passthrough" \
     "opencode" \
     "$(inject_ae_context "opencode" "/tmp/ae-test")"
+
+# inject_ae_context with [prompt] instructions
+_test_config="$(mktemp)"
+printf '[prompt]\ninstructions = "Use Rust. No unsafe."\n' > "$_test_config"
+CONFIG_FILE="$_test_config"
+result_instr="$(inject_ae_context "claude --model opus" "/tmp/ae-test" "sess" "/home/user")"
+CONFIG_FILE="/dev/null"
+rm -f "$_test_config"
+
+assert_eq "ae_context: includes user instructions" \
+    "1" \
+    "$([[ "$result_instr" == *"Use Rust. No unsafe."* ]] && echo 1 || echo 0)"
+
+assert_eq "ae_context: instructions have separator" \
+    "1" \
+    "$([[ "$result_instr" == *"--- Workspace instructions:"* ]] && echo 1 || echo 0)"
+
+# inject_ae_context: local config overrides global instructions
+_global_cfg="$(mktemp)"
+_local_cfg="$(mktemp)"
+printf '[prompt]\ninstructions = "global rules"\n' > "$_global_cfg"
+printf '[prompt]\ninstructions = "local rules"\n' > "$_local_cfg"
+CONFIG_FILE="$_global_cfg"
+AE_LOCAL_CONFIG="$_local_cfg"
+result_override="$(inject_ae_context "claude --model opus" "/tmp/ae-test" "sess" "/home/user")"
+CONFIG_FILE="/dev/null"
+AE_LOCAL_CONFIG=""
+rm -f "$_global_cfg" "$_local_cfg"
+
+assert_eq "ae_context: local instructions override global" \
+    "1" \
+    "$([[ "$result_override" == *"local rules"* ]] && echo 1 || echo 0)"
+
+assert_eq "ae_context: global instructions shadowed by local" \
+    "0" \
+    "$([[ "$result_override" == *"global rules"* ]] && echo 1 || echo 0)"
 
 # ── gen_uuid ─────────────────────────────────────────────────────────
 

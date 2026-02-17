@@ -151,6 +151,9 @@ inject_session_id() {
 inject_ae_context() {
     local cmd="$1" meta_dir="$2" session="${3:-}" work_dir="${4:-}"
     local ctx="You are in an ae multi-agent workspace. Session: ${session}. Directory: ${work_dir}. Spawn another agent: ${meta_dir}/spawn <alias>:<name> [prompt] — always give a descriptive role name (e.g. codex:reviewer, claude:pair-programmer, claude:debugger). Send a message to another agent: ${meta_dir}/send \"<agent_name>\" \"<message>\". Check another agent: cat ${meta_dir}/workspace.md for names and pane IDs, then tmux capture-pane -t \"<pane_id>\" -p | tail -20."
+    local user_instr
+    user_instr="$(get_config prompt.instructions)"
+    [[ -n "$user_instr" ]] && ctx="${ctx} --- Workspace instructions: ${user_instr}"
     local escaped="${ctx//\'/\'\\\'\'}"
     case "$cmd" in
         claude*)

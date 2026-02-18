@@ -745,6 +745,7 @@ cmd_help() {
     echo "Usage:"
     echo "  ae                     Start or reattach default session (local)"
     echo "  ae <name>              Start or reattach a named session"
+    echo "  ae <name> use <alias>  Start session with a specific agent as main"
     echo "  ae --local [name]      Start session in current directory (default)"
     echo "  ae --copy [name]       Start session with full copy (includes untracked files)"
     echo "  ae --worktree [name]   Start session with git worktree (tracked files only)"
@@ -1038,11 +1039,19 @@ esac
 # --- Parse flags ---
 COPY_MODE_OVERRIDE=""
 SESSION=""
+MAIN_OVERRIDE=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --worktree) COPY_MODE_OVERRIDE="git"; shift ;;
         --copy)     COPY_MODE_OVERRIDE="full"; shift ;;
         --local)    COPY_MODE_OVERRIDE="local"; shift ;;
+        use)
+            shift
+            if [[ $# -eq 0 ]]; then
+                echo "Error: 'use' requires an agent alias (e.g. ae myproject use codex)" >&2; exit 1
+            fi
+            MAIN_OVERRIDE="$1"; shift
+            ;;
         --*)    echo "Error: unknown flag '$1'. Use --worktree, --copy, or --local." >&2; exit 1 ;;
         *)      SESSION="$1"; shift ;;
     esac
@@ -1066,7 +1075,7 @@ fi
 # --- Validate config before creating anything ---
 # Parse alias[:name] — e.g. "claude:lead" → alias=claude, name=lead
 # If no name given, name defaults to the alias itself
-MAIN_RAW="$(get_config workspace.main)"
+MAIN_RAW="${MAIN_OVERRIDE:-$(get_config workspace.main)}"
 if [[ "$MAIN_RAW" == *:* ]]; then
     MAIN_ALIAS="${MAIN_RAW%%:*}"
     MAIN_NAME="${MAIN_RAW#*:}"
@@ -1249,7 +1258,7 @@ done
 AE_META="${SESSIONS_DIR}/${SESSION}"
 mkdir -p -m 0700 "$AE_META"
 
-# Session metadata (used by ae list/kill for stopped sessions, and by spawn helper)
+# Session metadata (used by ae list/end for stopped sessions, and by spawn helper)
 # Always write full meta: on resume, preserve original mode/origin from existing file
 META_MODE="$COPY_MODE"
 META_ORIGIN="$ORIGIN_DIR"

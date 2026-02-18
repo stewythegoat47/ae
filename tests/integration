@@ -276,6 +276,25 @@ assert_eq "projcfg: local config overrides main" "ae:dummy2:dummy2" "$pane_title
 "$AE" end test-projcfg 2>/dev/null || true
 sleep 0.5
 
+# ── Test 8: ae <name> use <alias> override ────────────────────────
+
+REPO8="$(setup_repo)"
+(cd "$REPO8" && "$AE" --local test-use use dummy2 &) 2>/dev/null
+wait_for_session "test-use"
+sleep 1
+
+# Pane title should reflect dummy2 as main agent (override from CLI)
+pane_title="$(tmux list-panes -t test-use -F '#{pane_title}' 2>/dev/null | head -1)"
+assert_eq "use: CLI override sets main agent" "ae:dummy2:dummy2" "$pane_title"
+
+# Meta should record dummy2 as agent.main
+meta_main="$(grep '^agent\.main=' "$HOME/.ae/sessions/test-use/meta" 2>/dev/null || echo "")"
+assert_contains "use: meta records override agent" "agent.main=dummy2:" "$meta_main"
+
+# Clean up
+"$AE" end test-use 2>/dev/null || true
+sleep 0.5
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""

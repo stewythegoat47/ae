@@ -61,13 +61,13 @@ ae my-feature                  # all agents resume with their conversation histo
 **Check on agents without attaching:**
 ```bash
 ae status my-feature           # see recent output from all agents
-ae list                        # all sessions with agent health (2/2 or 1/2!)
+ae list                        # all sessions with per-agent status
 ```
 
 **Finish up:**
 ```bash
 ae end my-feature              # commit + push to ae/my-feature branch, clean up
-ae discard my-experiment       # throw away without saving
+ae rm my-experiment            # same as ae end
 ```
 
 ## Config
@@ -121,14 +121,14 @@ workers = codex:reviewer, opencode:tester
 
 ```
 ae [name]              Start or reattach a session
+ae [name] use <alias>  Start session with a specific agent as main
 ae list                List all sessions with agent health
 ae status [name]       Show agent output without attaching
 ae stop [name]         Pause session, keep state for later
-ae end [name]          Commit, push to ae/<name> branch, clean up
-ae discard [name]      Destroy session without saving
+ae end|rm [name]       Commit, push to ae/<name> branch, clean up
 ```
 
-When run inside an ae session, `stop`, `end`, `discard`, and `status` detect the current session automatically.
+When run inside an ae session, `stop`, `end`, and `status` detect the current session automatically.
 
 ## How it works
 

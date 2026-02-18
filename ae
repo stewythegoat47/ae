@@ -22,7 +22,7 @@ fi
 #   Resume:     strip_session_flags, resume_cmd_from_cmd, inject_session_id, inject_ae_context, resolve_agent_session_id
 #   Session:    read_session_meta, list_ae_sessions, iter_stopped_sessions, cleanup_session
 #   End/branch: sanitize_branch_name, resolve_session_workdir, end_session
-#   Commands:   cmd_list, cmd_status, cmd_stop, cmd_end, cmd_discard, cmd_help, _cmd_spawn
+#   Commands:   cmd_list, cmd_status, cmd_stop, cmd_end, cmd_help, _cmd_spawn
 #   Manifest:   regenerate_manifest
 #   Launch:     send_agent_cmd, capture_codex_session_id
 
@@ -131,7 +131,14 @@ resume_cmd_from_cmd() {
             ;;
         codex*)
             if [[ -n "$session_id" ]]; then
-                echo "codex resume ${session_id}"
+                # Preserve flags (e.g. --yolo) from original command for the resume subcommand
+                local codex_flags="${clean#codex}"
+                codex_flags="${codex_flags# }"  # strip leading space
+                if [[ -n "$codex_flags" ]]; then
+                    echo "codex ${codex_flags} resume ${session_id}"
+                else
+                    echo "codex resume ${session_id}"
+                fi
             else
                 echo "$clean"  # fresh start (--last is unreliable for concurrent sessions)
             fi
@@ -173,18 +180,24 @@ build_ae_context() {
 # Inject ae workspace context into agent system prompt (survives context compaction)
 # Claude Code: --append-system-prompt; Codex: -c developer_instructions; others: initial prompt
 inject_ae_context() {
-    local cmd="$1" meta_dir="$2" session="${3:-}" work_dir="${4:-}"
+    local cmd="$1" meta_dir="$2" session="${3:-}" work_dir="${4:-}" slot="${5:-}"
     local ctx
     ctx="$(build_ae_context "$meta_dir" "$session" "$work_dir")"
-    local escaped="${ctx//\'/\'\\\'\'}"
     case "$cmd" in
         claude*)
+            local escaped="${ctx//\'/\'\\\'\'}"
             echo "${cmd} --append-system-prompt '${escaped}'"
             ;;
         codex*)
+            # Tell codex to self-register its session ID by running the slot-scoped helper script
+            local slot_arg=""
+            [[ -n "$slot" ]] && slot_arg=" ${slot}"
+            local full_ctx="${ctx} --- CRITICAL FIRST TASK: Enable session resume by running: ${meta_dir}/register-sid${slot_arg} — do this NOW before anything else."
+            local escaped="${full_ctx//\'/\'\\\'\'}"
             echo "${cmd} -c developer_instructions='${escaped}'"
             ;;
         gemini*)
+            local escaped="${ctx//\'/\'\\\'\'}"
             echo "${cmd} -i '${escaped}'"
             ;;
         *) echo "$cmd" ;;
@@ -218,7 +231,7 @@ gen_uuid() {
     fi
 }
 
-# Detect current ae session when running inside tmux (for ae end/discard/status without name)
+# Detect current ae session when running inside tmux (for ae end/status without name)
 detect_current_session() {
     if [[ -n "${TMUX:-}" ]]; then
         local session_name
@@ -243,16 +256,32 @@ tool_kind_from_cmd() {
 }
 
 # Best-effort: capture Codex session ID post-launch (codex prints "session id: <uuid>" on startup)
+# Wait for codex to self-register its session ID via developer_instructions,
+# then update the meta file. Falls back to TUI scraping if self-registration doesn't happen.
 capture_codex_session_id() {
     local pane="$1" slot="$2" meta_dir="$3"
-    sleep 5
-    local captured
-    captured="$(tmux capture-pane -t "$pane" -p 2>/dev/null | grep -oP 'session id: \K[0-9a-f-]+' | head -1 || true)"
+    local sid_file="${meta_dir}/codex.${slot}.sid"
+    local captured=""
+    # Poll for self-registered session ID (codex writes to codex.sid via developer_instructions)
+    local attempt
+    for attempt in 1 2 3 4 5 6; do
+        sleep 5
+        if [[ -f "$sid_file" ]]; then
+            captured="$(< "$sid_file")"
+            captured="${captured//[$'\n\r ']/}"  # strip whitespace
+            rm -f "$sid_file"
+            break
+        fi
+    done
+    # Fallback: scrape TUI output (legacy, less reliable)
+    if [[ -z "$captured" ]]; then
+        captured="$(tmux capture-pane -t "$pane" -p 2>/dev/null | grep -oP 'session id: \K[0-9a-f-]+' | head -1 || true)"
+    fi
     if [[ -n "$captured" ]]; then
         (
             flock -w 5 200 || exit 1
             local escaped_slot="${slot//./\\.}"
-            sed -i "s/^agent_session\.${escaped_slot}=codex:.*$/agent_session.${slot}=codex:${captured}/" "$meta_dir/meta"
+            sed -i "s/^agent\.${escaped_slot}=\([^:]*:[^:]*:\).*/agent.${slot}=\1${captured}/" "$meta_dir/meta"
         ) 200>"$meta_dir/meta.lock"
     fi
 }
@@ -267,11 +296,11 @@ resolve_agent_session_id() {
     local session_id=""
     if [[ "${RESUMING:-}" == true ]] && [[ -n "${SESSION:-}" ]]; then
         local stored
-        stored="$(read_session_meta "$SESSION" "agent_session.${slot}")"
+        stored="$(read_session_meta "$SESSION" "agent.${slot}")"
         if [[ -n "$stored" ]]; then
-            local stored_kind="${stored%%:*}"
-            local stored_id="${stored#*:}"
-            if [[ "$stored_kind" == "$kind" ]] && [[ "$stored_id" != "pending" ]]; then
+            # Format: alias:name:session_id
+            local stored_id="${stored##*:}"
+            if [[ "$stored_id" != "pending" && -n "$stored_id" ]]; then
                 session_id="$stored_id"
             fi
         fi
@@ -498,7 +527,7 @@ end_session() {
         fi
     else
         echo "Error: working directory is not a git repo — cannot preserve work." >&2
-        echo "  Use 'ae discard $session_name' to destroy without saving." >&2
+        echo "  Use 'ae end $session_name' to end the session." >&2
         return 1
     fi
 
@@ -513,51 +542,85 @@ end_session() {
 
 # --- Subcommands ---
 
+# Parse agent entry (alias:name:session_id) and print "alias:name short_sid"
+_parse_agent_entry() {
+    local val="$1"
+    # Format: alias:name:session_id
+    local alias="${val%%:*}"
+    local rest="${val#*:}"
+    local name="${rest%%:*}"
+    local sid="${rest#*:}"
+    local short="-"
+    [[ -n "$sid" && "$sid" != "pending" ]] && short="${sid:0:8}"
+    printf '%s:%s\t%s\n' "$alias" "$name" "$short"
+}
+
 cmd_list() {
     local sessions has_output=false
-    local hdr='%-40s  %-10s  %-8s  %-10s  %-40s  %s\n'
+    # Column widths: SESSION(24) STATUS(8) MODE(10) ORIGIN(rest)
+    local hdr='%-24s  %-8s  %-10s  %s\n'
+    local indent='%-24s  %-8s  %-10s  %s\n'  # same widths for target indent
     sessions="$(list_ae_sessions)"
     if [[ -n "$sessions" ]]; then
         has_output=true
-        printf "$hdr" "SESSION" "STATUS" "AGENTS" "MODE" "ORIGIN" "TARGET"
+        printf "$hdr" "SESSION" "STATUS" "MODE" "ORIGIN"
         while IFS= read -r name; do
             [[ -z "$name" ]] && continue
-            local total=0 alive=0 origin mode health workdir target
-            while IFS=$'\t' read -r ae_agent pane_cmd; do
-                [[ -n "$ae_agent" ]] || continue
-                total=$(( total + 1 ))
-                case "$pane_cmd" in
-                    bash|fish|zsh|sh|dash) ;;
-                    *) alive=$(( alive + 1 )) ;;
-                esac
-            done < <(tmux list-panes -t "$name" -F '#{@ae_agent}	#{pane_current_command}' 2>/dev/null)
-            health="${alive}/${total}"
-            [[ $alive -lt $total ]] && health="${health}!"
-            origin="$(tmux show-environment -t "$name" AE_ORIGIN 2>/dev/null | sed 's/^AE_ORIGIN=//' || echo "?")"
+            local meta="${SESSIONS_DIR}/${name}/meta"
+            local meta_blob=""
+            [[ -f "$meta" ]] && meta_blob="$(<"$meta")"
+            local origin mode workdir
+            origin="$(tmux show-environment -t "$name" AE_ORIGIN 2>/dev/null | sed 's/^AE_ORIGIN=//' || true)"
+            [[ -z "$origin" ]] && origin="$(echo "$meta_blob" | sed -n 's/^origin=//p')"
+            origin="${origin:-?}"
             mode="$(tmux show-environment -t "$name" AE_MODE 2>/dev/null | sed 's/^AE_MODE=//' || true)"
-            mode="${mode:-$(read_session_meta "$name" mode)}"
+            [[ -z "$mode" ]] && mode="$(echo "$meta_blob" | sed -n 's/^mode=//p')"
             mode="${mode:-?}"
             workdir="$(tmux show-environment -t "$name" AE_DIR 2>/dev/null | sed 's/^AE_DIR=//' || true)"
-            workdir="${workdir:-$(read_session_meta "$name" work_dir)}"
-            target="-"
-            [[ "$mode" != "local" && -n "$workdir" ]] && target="$workdir"
-            printf "$hdr" "$name" "running" "$health" "$mode" "$origin" "$target"
+            [[ -z "$workdir" ]] && workdir="$(echo "$meta_blob" | sed -n 's/^work_dir=//p')"
+            printf "$hdr" "$name" "running" "$mode" "$origin"
+            [[ "$mode" != "local" && -n "$workdir" ]] && printf "$indent" "" "" "" "  -> $workdir"
+            # Build alive map from tmux panes (one tmux call)
+            declare -A _alive=()
+            while IFS=$'\t' read -r ae_agent pane_cmd; do
+                [[ -n "$ae_agent" ]] || continue
+                case "$pane_cmd" in
+                    bash|fish|zsh|sh|dash) _alive["$ae_agent"]="!" ;;
+                    *) _alive["$ae_agent"]="" ;;
+                esac
+            done < <(tmux list-panes -t "$name" -F '#{@ae_agent}	#{pane_current_command}' 2>/dev/null)
+            while IFS='=' read -r mk mv; do
+                [[ "$mk" == agent.* ]] || continue
+                local aname asid
+                IFS=$'\t' read -r aname asid < <(_parse_agent_entry "$mv")
+                local marker="${_alive[$aname]:-}"
+                printf "  %-22s  %-8s  %s\n" "$aname" "$asid" "$marker"
+            done <<< "$meta_blob"
+            unset _alive
         done <<< "$sessions"
     fi
     while IFS= read -r name; do
         if [[ "$has_output" == false ]]; then
-            printf "$hdr" "SESSION" "STATUS" "AGENTS" "MODE" "ORIGIN" "TARGET"
+            printf "$hdr" "SESSION" "STATUS" "MODE" "ORIGIN"
             has_output=true
         fi
-        local mode origin workdir target
-        mode="$(read_session_meta "$name" mode)"
+        local meta="${SESSIONS_DIR}/${name}/meta"
+        local meta_blob=""
+        [[ -f "$meta" ]] && meta_blob="$(<"$meta")"
+        local mode origin workdir
+        mode="$(echo "$meta_blob" | sed -n 's/^mode=//p')"
         mode="${mode:-?}"
-        origin="$(read_session_meta "$name" origin)"
+        origin="$(echo "$meta_blob" | sed -n 's/^origin=//p')"
         origin="${origin:--}"
-        workdir="$(read_session_meta "$name" work_dir)"
-        target="-"
-        [[ "$mode" != "local" && -n "$workdir" ]] && target="$workdir"
-        printf "$hdr" "$name" "stopped" "-" "$mode" "$origin" "$target"
+        workdir="$(echo "$meta_blob" | sed -n 's/^work_dir=//p')"
+        printf "$hdr" "$name" "stopped" "$mode" "$origin"
+        [[ "$mode" != "local" && -n "$workdir" ]] && printf "$indent" "" "" "" "  -> $workdir"
+        while IFS='=' read -r mk mv; do
+            [[ "$mk" == agent.* ]] || continue
+            local aname asid
+            IFS=$'\t' read -r aname asid < <(_parse_agent_entry "$mv")
+            printf "  %-22s  %s\n" "$aname" "$asid"
+        done <<< "$meta_blob"
     done < <(iter_stopped_sessions)
     if [[ "$has_output" == false ]]; then
         echo "No ae sessions."
@@ -675,54 +738,6 @@ cmd_end() {
     fi
 }
 
-cmd_discard() {
-    local target="${1:-}"
-    if [[ -z "$target" ]]; then
-        target="$(detect_current_session 2>/dev/null)" || {
-            echo "Usage: ae discard [session-name]" >&2
-            echo "       ae discard all" >&2
-            echo "(Run inside an ae tmux session to discard it without specifying the name.)" >&2
-            return 1
-        }
-    fi
-    if [[ "$target" == "all" ]]; then
-        local found=false
-        local sessions
-        sessions="$(list_ae_sessions)"
-        if [[ -n "$sessions" ]]; then
-            while IFS= read -r s; do
-                [[ -z "$s" ]] && continue
-                found=true
-                cleanup_session "$s"
-                tmux kill-session -t "$s"
-                echo "Discarded $s"
-            done <<< "$sessions"
-        fi
-        while IFS= read -r name; do
-            found=true
-            cleanup_session "$name"
-            echo "Discarded stopped session $name"
-        done < <(iter_stopped_sessions)
-        if [[ "$found" == false ]]; then
-            echo "No ae sessions."
-        fi
-    else
-        if tmux has-session -t "$target" 2>/dev/null; then
-            cleanup_session "$target"
-            tmux kill-session -t "$target"
-            echo "Discarded $target"
-        elif [[ ! "$target" =~ [/] ]] && [[ -d "${SESSIONS_DIR}/${target}" ]]; then
-            cleanup_session "$target"
-            echo "Discarded stopped session $target"
-        elif [[ ! "$target" =~ [/] ]] && [[ -d "${WORKTREES_DIR}/${target}" ]]; then
-            cleanup_session "$target"
-            echo "Discarded stopped session $target"
-        else
-            echo "Session '$target' not found." >&2
-            return 1
-        fi
-    fi
-}
 
 cmd_help() {
     echo "ae - agentic engineering: tmux multi-agent workspace"
@@ -736,13 +751,12 @@ cmd_help() {
     echo "  ae list                List all ae sessions"
     echo "  ae status [name]       Show recent agent output without attaching"
     echo "  ae stop [name]         Stop session, keep state for resume (or 'ae stop all')"
-    echo "  ae end [name]          End session: commit, push, clean up (or 'ae end all')"
-    echo "  ae discard [name]      Discard session without saving (or 'ae discard all')"
+    echo "  ae end|rm [name]       End session: commit, push, clean up (or 'ae end all')"
     echo "  ae help                Show this help"
     echo ""
     echo "Modes: --local (default), --copy (full cp -a), --worktree (git worktree)."
     echo "Sessions persist across reboots. Agents with session support resume conversations; others start fresh."
-    echo "When inside an ae session, stop/end/discard/status work without specifying the name."
+    echo "When inside an ae session, stop/end/status work without specifying the name."
     echo ""
     echo "Config: ~/.ae/config (per-project override: .ae/config in project dir)"
 }
@@ -754,6 +768,11 @@ _cmd_spawn() {
     local alias_name="${alias_arg%%:*}"
     local spawn_name=""
     [[ "$alias_arg" == *:* ]] && spawn_name="${alias_arg#*:}"
+    # Name must not contain ':' (used as delimiter in meta format)
+    if [[ "$spawn_name" == *:* ]]; then
+        echo "Error: agent name cannot contain ':' — use alias:name format" >&2
+        return 1
+    fi
     local prompt="${*:-"You were spawned into an ae workspace. Read ${meta_dir}/workspace.md for details."}"
 
     # Read meta
@@ -809,14 +828,13 @@ _cmd_spawn() {
     {
         flock -w 5 200 || { echo "Error: could not lock meta" >&2; return 1; }
         next_idx=0
-        while grep -q "^spawned\\.${next_idx}=" "$meta_dir/meta" 2>/dev/null; do
+        while grep -q "^agent\\.spawned\\.${next_idx}=" "$meta_dir/meta" 2>/dev/null; do
             next_idx=$(( next_idx + 1 ))
         done
         slot="spawned.${next_idx}"
         [[ -z "$spawn_name" ]] && spawn_name="helper-${next_idx}"
         session_id="$(resolve_agent_session_id "$cmd" "$slot")"
-        echo "${slot}=${alias_name}:${spawn_name}" >> "$meta_dir/meta"
-        echo "agent_session.${slot}=${tool_kind}:${session_id}" >> "$meta_dir/meta"
+        echo "agent.${slot}=${alias_name}:${spawn_name}:${session_id}" >> "$meta_dir/meta"
     } 200>"$meta_dir/meta.lock"
 
     # Label pane (after flock so spawn_name is resolved)
@@ -829,7 +847,7 @@ _cmd_spawn() {
     # Launch agent with session-scoped ID and ae workspace context
     local scoped_cmd initial_msg
     scoped_cmd="$(inject_session_id "$cmd" "$session_id")"
-    scoped_cmd="$(inject_ae_context "$scoped_cmd" "$meta_dir" "$session" "$work_dir")"
+    scoped_cmd="$(inject_ae_context "$scoped_cmd" "$meta_dir" "$session" "$work_dir" "$slot")"
     # For agents without system prompt injection, combine workspace context + spawn prompt
     initial_msg="$(initial_prompt_for_cmd "$cmd" "$meta_dir" "$session" "$work_dir")"
     if [[ -n "$initial_msg" ]]; then
@@ -946,18 +964,74 @@ Available aliases: ${available_aliases} (from ~/.ae/config)
 EOF
 }
 
+# --- Agent launch helper (must be defined before dispatcher for _spawn) ---
+send_agent_cmd() {
+    local pane="$1" cmd="$2" prompt="$3"
+    case "$cmd" in
+        codex*resume*)
+            # codex resume doesn't accept inline prompts — launch, then send prompt as input
+            # Only send prompt if codex is still running (avoids shell execution on resume failure)
+            # Fallback: if resume fails (stale UUID), start fresh — strip "resume <uuid>" but keep flags
+            local codex_fallback
+            codex_fallback="$(echo "$cmd" | sed 's/ *resume [^ ]*//')"
+            tmux send-keys -t "$pane" "$cmd || $codex_fallback" C-m
+            if [[ -n "$prompt" ]]; then
+                (sleep 3 && \
+                    if tmux list-panes -F '#{pane_id} #{pane_current_command}' | grep -q "^${pane} codex$"; then
+                        local buf="ae-launch-$$-${pane}"
+                        tmux select-pane -t "$pane"
+                        tmux set-buffer -b "$buf" -- "$prompt"
+                        tmux paste-buffer -d -b "$buf" -t "$pane"
+                        sleep 0.1
+                        tmux send-keys -t "$pane" Enter
+                    fi
+                ) &
+            fi
+            ;;
+        opencode*)
+            # OpenCode has no system prompt flag — launch TUI, then paste context as first message
+            tmux send-keys -t "$pane" "$cmd" C-m
+            if [[ -n "$prompt" ]]; then
+                (sleep 3 && \
+                    if tmux list-panes -F '#{pane_id} #{pane_current_command}' | grep -q "^${pane} opencode$"; then
+                        local buf="ae-launch-$$-${pane}"
+                        tmux select-pane -t "$pane"
+                        tmux set-buffer -b "$buf" -- "$prompt"
+                        tmux paste-buffer -d -b "$buf" -t "$pane"
+                        sleep 0.1
+                        tmux send-keys -t "$pane" Enter
+                    fi
+                ) &
+            fi
+            ;;
+        *)
+            local buf="ae-launch-$$-${pane}" launch_cmd="$cmd"
+            # Resilient resume: if claude --resume UUID fails, fall back to --continue
+            if [[ "$cmd" == claude*" --resume "* ]]; then
+                local fallback
+                fallback="$(echo "$cmd" | sed 's/--resume [^ ]*/--continue/')"
+                launch_cmd="${cmd} || ${fallback}"
+            fi
+            if [[ -n "$prompt" ]]; then
+                # Buffer-paste avoids tmux escaping issues; shell-escape single quotes in prompt
+                local escaped_prompt="${prompt//\'/\'\\\'\'}"
+                tmux set-buffer -b "$buf" -- "${launch_cmd} '${escaped_prompt}'"
+            else
+                tmux set-buffer -b "$buf" -- "$launch_cmd"
+            fi
+            tmux paste-buffer -d -b "$buf" -t "$pane"
+            tmux send-keys -t "$pane" C-m
+            ;;
+    esac
+}
+
 # --- Dispatcher ---
 case "${1:-}" in
     list|ls)        cmd_list; exit 0 ;;
     status)         cmd_status "${2:-}"; exit $? ;;
     stop)           cmd_stop "${2:-}"; exit $? ;;
-    end)            cmd_end "${2:-}"; exit $? ;;
-    discard)        cmd_discard "${2:-}"; exit $? ;;
-    _spawn)         _cmd_spawn "${@:2}"; exit $? ;;
-    kill|rm)
-        echo "Warning: 'ae kill' is deprecated, use 'ae end' (preserve work) or 'ae discard' (destroy)." >&2
-        exec "$0" discard "${2:-}"
-        ;;
+    end|rm)              cmd_end "${2:-}"; exit $? ;;
+    _spawn)              _cmd_spawn "${@:2}"; exit $? ;;
     help|-h|--help) cmd_help; exit 0 ;;
 esac
 
@@ -1000,6 +1074,10 @@ else
     MAIN_ALIAS="$MAIN_RAW"
     MAIN_NAME="$MAIN_RAW"  # default name = alias
 fi
+if [[ "$MAIN_NAME" == *:* ]]; then
+    echo "Error: agent name '${MAIN_NAME}' cannot contain ':' — use alias:name format (one colon)" >&2
+    exit 1
+fi
 LAYOUT="$(get_config workspace.layout)"
 WORKERS_RAW="$(get_config workspace.workers)"
 
@@ -1037,6 +1115,10 @@ if [[ -n "$WORKERS_RAW" ]]; then
         if [[ "$entry" == *:* ]]; then
             walias="${entry%%:*}"
             wname="${entry#*:}"
+            if [[ "$wname" == *:* ]]; then
+                echo "Error: worker name '${wname}' cannot contain ':' — use alias:name format (one colon)" >&2
+                exit 1
+            fi
         else
             walias="$entry"
             wname="$entry"  # default name = alias
@@ -1072,7 +1154,7 @@ if [[ "$COPY_MODE" == "local" ]]; then
     # Local mode: work directly in current directory, no copy
     # Mode collision: error if a stopped worktree/copy session exists with the same name
     if [[ -d "${WORKTREES_DIR}/${SESSION}" ]]; then
-        echo "Error: stopped session '${SESSION}' exists as worktree/copy. End or discard it first, or use a different name." >&2
+        echo "Error: stopped session '${SESSION}' exists as worktree/copy. End it first (ae end ${SESSION}), or use a different name." >&2
         exit 1
     fi
     WORK_DIR="$PWD"
@@ -1192,16 +1274,12 @@ declare -a SPAWNED_ALIASES=() SPAWNED_NAMES=() SPAWNED_CMDS=() SPAWNED_SESSION_I
 if [[ "$RESUMING" == true ]]; then
     sidx=0
     while true; do
-        sentry="$(read_session_meta "$SESSION" "spawned.${sidx}")"
+        sentry="$(read_session_meta "$SESSION" "agent.spawned.${sidx}")"
         [[ -z "$sentry" ]] && break
-        # Parse alias:name (backward compat: old format without name)
-        if [[ "$sentry" == *:* ]]; then
-            salias="${sentry%%:*}"
-            sname="${sentry#*:}"
-        else
-            salias="$sentry"
-            sname="helper-${sidx}"
-        fi
+        # Format: alias:name:session_id
+        salias="${sentry%%:*}"
+        _rest="${sentry#*:}"
+        sname="${_rest%%:*}"
         scmd="$(get_config "agents.${salias}")"
         if [[ -n "$scmd" ]]; then
             SPAWNED_ALIASES+=("$salias")
@@ -1245,18 +1323,13 @@ layout=${LAYOUT:-vertical}
 config=${CONFIG_FILE}
 main_pane=${PANE_IDS[0]}
 ae_path=${AE_PATH}
-agent_session.main=${MAIN_TOOL_KIND}:${MAIN_SESSION_ID}
+agent.main=${MAIN_ALIAS}:${MAIN_NAME}:${MAIN_SESSION_ID}
 EOF
-# Append worker session IDs
 for i in "${!WORKER_CMDS[@]}"; do
-    local_kind="$(tool_kind_from_cmd "${WORKER_CMDS[$i]}")"
-    echo "agent_session.worker.${i}=${local_kind}:${WORKER_SESSION_IDS[$i]}" >> "${AE_META}/meta"
+    echo "agent.worker.${i}=${WORKER_ALIASES[$i]}:${WORKER_NAMES[$i]}:${WORKER_SESSION_IDS[$i]}" >> "${AE_META}/meta"
 done
-# Append spawned agent info (resume only — fresh starts have no spawned agents yet)
 for i in "${!SPAWNED_ALIASES[@]}"; do
-    local_kind="$(tool_kind_from_cmd "${SPAWNED_CMDS[$i]}")"
-    echo "spawned.${i}=${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]}" >> "${AE_META}/meta"
-    echo "agent_session.spawned.${i}=${local_kind}:${SPAWNED_SESSION_IDS[$i]}" >> "${AE_META}/meta"
+    echo "agent.spawned.${i}=${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]}:${SPAWNED_SESSION_IDS[$i]}" >> "${AE_META}/meta"
 done
 
 # Helper: send <target> <message> — focuses pane, pastes text, submits
@@ -1332,90 +1405,55 @@ exec "$AE_PATH" _spawn "$META_DIR" "$@"
 SPAWNEOF
 chmod 0700 "${AE_META}/spawn"
 
+# Helper: register-sid — codex agents run this to self-register their session ID
+cat > "${AE_META}/register-sid" <<'REGSIDEOF'
+#!/usr/bin/env bash
+# Find the most recent codex session file and write its UUID to codex.<slot>.sid
+META_DIR="$(cd "$(dirname "$0")" && pwd)"
+SLOT="${1:-default}"
+sid=$(ls -t ~/.codex/sessions/$(date -u +%Y/%m/%d)/*.jsonl 2>/dev/null | head -1 | grep -oP '[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}')
+if [ -n "$sid" ]; then
+    echo "$sid" > "$META_DIR/codex.${SLOT}.sid"
+    echo "registered session $sid for slot $SLOT"
+else
+    echo "no codex session found for today" >&2
+    exit 1
+fi
+REGSIDEOF
+chmod 0700 "${AE_META}/register-sid"
+
 # Generate initial workspace.md from live pane state
 regenerate_manifest "$SESSION" "$WORK_DIR" "$ORIGIN_DIR" "$COPY_MODE" "${PANE_IDS[0]}" "$AE_META"
 
 # --- Launch agents ---
-# Send agent command with prompt. Some tools (codex resume) don't accept inline
-# prompts, so we launch first and send the prompt as user input after a delay.
-send_agent_cmd() {
-    local pane="$1" cmd="$2" prompt="$3"
-    case "$cmd" in
-        codex\ resume*)
-            # codex resume doesn't accept inline prompts — launch, then send prompt as input
-            # Only send prompt if codex is still running (avoids shell execution on resume failure)
-            tmux send-keys -t "$pane" "$cmd" C-m
-            if [[ -n "$prompt" ]]; then
-                (sleep 3 && \
-                    if tmux list-panes -F '#{pane_id} #{pane_current_command}' | grep -q "^${pane} codex$"; then
-                        local buf="ae-launch-$$-${pane}"
-                        tmux select-pane -t "$pane"
-                        tmux set-buffer -b "$buf" -- "$prompt"
-                        tmux paste-buffer -d -b "$buf" -t "$pane"
-                        sleep 0.1
-                        tmux send-keys -t "$pane" Enter
-                    fi
-                ) &
-            fi
-            ;;
-        opencode*)
-            # OpenCode has no system prompt flag — launch TUI, then paste context as first message
-            tmux send-keys -t "$pane" "$cmd" C-m
-            if [[ -n "$prompt" ]]; then
-                (sleep 3 && \
-                    if tmux list-panes -F '#{pane_id} #{pane_current_command}' | grep -q "^${pane} opencode$"; then
-                        local buf="ae-launch-$$-${pane}"
-                        tmux select-pane -t "$pane"
-                        tmux set-buffer -b "$buf" -- "$prompt"
-                        tmux paste-buffer -d -b "$buf" -t "$pane"
-                        sleep 0.1
-                        tmux send-keys -t "$pane" Enter
-                    fi
-                ) &
-            fi
-            ;;
-        *)
-            local buf="ae-launch-$$-${pane}"
-            if [[ -n "$prompt" ]]; then
-                # Buffer-paste avoids tmux escaping issues; shell-escape single quotes in prompt
-                local escaped_prompt="${prompt//\'/\'\\\'\'}"
-                tmux set-buffer -b "$buf" -- "${cmd} '${escaped_prompt}'"
-            else
-                tmux set-buffer -b "$buf" -- "$cmd"
-            fi
-            tmux paste-buffer -d -b "$buf" -t "$pane"
-            tmux send-keys -t "$pane" C-m
-            ;;
-    esac
-}
 
 if [[ "$RESUMING" == true ]]; then
     # Resume: use session-scoped resume commands (exact conversation, not CWD heuristic)
     MAIN_RESUME="$(resume_cmd_from_cmd "$MAIN_CMD" "$MAIN_SESSION_ID")"
-    MAIN_RESUME="$(inject_ae_context "$MAIN_RESUME" "$AE_META" "$SESSION" "$WORK_DIR")"
+    MAIN_RESUME="$(inject_ae_context "$MAIN_RESUME" "$AE_META" "$SESSION" "$WORK_DIR" "main")"
     send_agent_cmd "${PANE_IDS[0]}" "$MAIN_RESUME" "$(initial_prompt_for_cmd "$MAIN_CMD" "$AE_META" "$SESSION" "$WORK_DIR")"
     for i in "${!WORKER_CMDS[@]}"; do
         idx=$(( i + 1 ))
         WORKER_RESUME="$(resume_cmd_from_cmd "${WORKER_CMDS[$i]}" "${WORKER_SESSION_IDS[$i]:-}")"
-        WORKER_RESUME="$(inject_ae_context "$WORKER_RESUME" "$AE_META" "$SESSION" "$WORK_DIR")"
+        WORKER_RESUME="$(inject_ae_context "$WORKER_RESUME" "$AE_META" "$SESSION" "$WORK_DIR" "worker.${i}")"
         send_agent_cmd "${PANE_IDS[$idx]}" "$WORKER_RESUME" "$(initial_prompt_for_cmd "${WORKER_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR")"
     done
     # Resume spawned agents
     for i in "${!SPAWNED_CMDS[@]}"; do
         sidx=$(( ${#WORKER_CMDS[@]} + i + 1 ))
         SPAWNED_RESUME="$(resume_cmd_from_cmd "${SPAWNED_CMDS[$i]}" "${SPAWNED_SESSION_IDS[$i]:-}")"
-        SPAWNED_RESUME="$(inject_ae_context "$SPAWNED_RESUME" "$AE_META" "$SESSION" "$WORK_DIR")"
+        SPAWNED_RESUME="$(inject_ae_context "$SPAWNED_RESUME" "$AE_META" "$SESSION" "$WORK_DIR" "spawned.${i}")"
         send_agent_cmd "${PANE_IDS[$sidx]}" "$SPAWNED_RESUME" "$(initial_prompt_for_cmd "${SPAWNED_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR")"
     done
 else
     # Fresh start with session-scoped IDs (enables targeted resume later)
     SCOPED_MAIN="$(inject_session_id "$MAIN_CMD" "$MAIN_SESSION_ID")"
-    SCOPED_MAIN="$(inject_ae_context "$SCOPED_MAIN" "$AE_META" "$SESSION" "$WORK_DIR")"
+    SCOPED_MAIN="$(inject_ae_context "$SCOPED_MAIN" "$AE_META" "$SESSION" "$WORK_DIR" "main")"
     send_agent_cmd "${PANE_IDS[0]}" "$SCOPED_MAIN" "$(initial_prompt_for_cmd "$MAIN_CMD" "$AE_META" "$SESSION" "$WORK_DIR")"
     for i in "${!WORKER_CMDS[@]}"; do
         idx=$(( i + 1 ))
         SCOPED_WORKER="$(inject_session_id "${WORKER_CMDS[$i]}" "${WORKER_SESSION_IDS[$i]:-}")"
-        SCOPED_WORKER="$(inject_ae_context "$SCOPED_WORKER" "$AE_META" "$SESSION" "$WORK_DIR")"
+        SCOPED_WORKER="$(inject_ae_context "$SCOPED_WORKER" "$AE_META" "$SESSION" "$WORK_DIR" "worker.${i}")"
         send_agent_cmd "${PANE_IDS[$idx]}" "$SCOPED_WORKER" "$(initial_prompt_for_cmd "${WORKER_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR")"
     done
 fi

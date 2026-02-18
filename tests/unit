@@ -126,9 +126,13 @@ assert_eq "resume: claude with pending → --continue (fallback)" \
     "claude --model opus --continue" \
     "$(resume_cmd_from_cmd "claude --model opus" "pending")"
 
-assert_eq "resume: codex with session_id → codex resume <id>" \
-    "codex resume abc-123" \
+assert_eq "resume: codex with session_id preserves flags" \
+    "codex --yolo resume abc-123" \
     "$(resume_cmd_from_cmd "codex --yolo" "abc-123")"
+
+assert_eq "resume: codex without flags → plain resume" \
+    "codex resume abc-123" \
+    "$(resume_cmd_from_cmd "codex" "abc-123")"
 
 assert_eq "resume: codex without session_id → fresh start" \
     "codex --yolo" \
@@ -193,6 +197,16 @@ assert_eq "ae_context: codex gets developer_instructions" \
 assert_eq "ae_context: codex contains meta dir" \
     "1" \
     "$([[ "$result_codex" == *"/tmp/ae-test/workspace.md"* ]] && echo 1 || echo 0)"
+
+assert_eq "ae_context: codex contains register-sid instruction" \
+    "1" \
+    "$([[ "$result_codex" == *"register-sid"* ]] && echo 1 || echo 0)"
+
+# Codex with slot arg
+result_codex_slot="$(inject_ae_context "codex --yolo" "/tmp/ae-test" "my-session" "/home/user/project" "worker.0")"
+assert_eq "ae_context: codex slot passed to register-sid" \
+    "1" \
+    "$([[ "$result_codex_slot" == *"register-sid worker.0"* ]] && echo 1 || echo 0)"
 
 result_gemini="$(inject_ae_context "gemini --yolo" "/tmp/ae-test" "my-session" "/home/user/project")"
 assert_eq "ae_context: gemini gets -i flag" \

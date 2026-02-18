@@ -88,7 +88,7 @@ wait_for_session() {
     done
 }
 
-# ── Test 1: Lifecycle — create, list, discard ────────────────────────
+# ── Test 1: Lifecycle — create, list, end ────────────────────────
 
 REPO="$(setup_repo)"
 (cd "$REPO" && "$AE" --local test-life &) 2>/dev/null
@@ -106,10 +106,10 @@ assert_contains "lifecycle: list shows running status" "running" "$list_output"
 # Meta should exist
 assert_eq "lifecycle: meta exists" "1" "$([[ -f "$HOME/.ae/sessions/test-life/meta" ]] && echo 1 || echo 0)"
 
-# Discard should clean up
-"$AE" discard test-life 2>/dev/null || true
+# End should clean up
+"$AE" end test-life 2>/dev/null || true
 sleep 0.5
-assert_eq "lifecycle: tmux session gone after discard" "1" "$(tmux has-session -t test-life 2>/dev/null && echo 0 || echo 1)"
+assert_eq "lifecycle: tmux session gone after end" "1" "$(tmux has-session -t test-life 2>/dev/null && echo 0 || echo 1)"
 assert_not_exists "lifecycle: session dir cleaned" "$HOME/.ae/sessions/test-life"
 
 # ── Test 2: Resume detection ─────────────────────────────────────────
@@ -138,7 +138,7 @@ wait_for_session "test-resume"
 assert_eq "resume: session re-created" "0" "$(tmux has-session -t test-resume 2>/dev/null; echo $?)"
 
 # Clean up
-"$AE" discard test-resume 2>/dev/null || true
+"$AE" end test-resume 2>/dev/null || true
 sleep 0.5
 
 # ── Test 3: Health check in list ─────────────────────────────────────
@@ -149,13 +149,13 @@ wait_for_session "test-health"
 sleep 1  # let agent (bash) start
 
 # Agent is bash — health check sees shell = dead agent (correct behavior)
-# Verify the AGENTS column shows N/N format
+# Verify idle agent shows ! marker in agent detail row
 list_output="$("$AE" list 2>/dev/null)"
-assert_contains "health: shows agent health format" "0/1!" "$list_output"
-assert_contains "health: AGENTS column header" "AGENTS" "$list_output"
+assert_contains "health: idle agent shows ! marker" "!" "$list_output"
+assert_contains "health: agent row shows name" "dummy" "$list_output"
 
 # Clean up
-"$AE" discard test-health 2>/dev/null || true
+"$AE" end test-health 2>/dev/null || true
 sleep 0.5
 
 # ── Test 4: Spawn persistence ────────────────────────────────────────
@@ -169,13 +169,9 @@ sleep 1
 "$HOME/.ae/sessions/test-spawn/spawn" dummy2 "test prompt" 2>/dev/null || true
 sleep 1
 
-# Meta should have spawned.0
-spawned="$(grep '^spawned\.0=' "$HOME/.ae/sessions/test-spawn/meta" 2>/dev/null || echo "")"
-assert_eq "spawn: recorded in meta" "spawned.0=dummy2:helper-0" "$spawned"
-
-# Should have agent_session.spawned.0
-spawned_session="$(grep '^agent_session\.spawned\.0=' "$HOME/.ae/sessions/test-spawn/meta" 2>/dev/null || echo "")"
-assert_contains "spawn: session ID recorded" "agent_session.spawned.0=" "$spawned_session"
+# Meta should have agent.spawned.0 in new unified format (alias:name:session_id)
+spawned="$(grep '^agent\.spawned\.0=' "$HOME/.ae/sessions/test-spawn/meta" 2>/dev/null || echo "")"
+assert_contains "spawn: recorded in meta" "agent.spawned.0=dummy2:helper-0:" "$spawned"
 
 # Should now have 2 panes
 pane_count="$(tmux list-panes -t test-spawn 2>/dev/null | wc -l)"
@@ -193,7 +189,7 @@ pane_count="$(tmux list-panes -t test-spawn 2>/dev/null | wc -l)"
 assert_eq "spawn: 2 panes after resume" "2" "$pane_count"
 
 # Clean up
-"$AE" discard test-spawn 2>/dev/null || true
+"$AE" end test-spawn 2>/dev/null || true
 sleep 0.5
 
 # ── Test 5: End session (worktree mode) ──────────────────────────────
@@ -255,7 +251,7 @@ status_output="$("$AE" status test-status 2>/dev/null)"
 assert_contains "status: stopped session" "stopped" "$status_output"
 
 # Clean up
-"$AE" discard test-status 2>/dev/null || true
+"$AE" end test-status 2>/dev/null || true
 sleep 0.5
 
 # ── Test 7: Per-project config override ───────────────────────────
@@ -277,7 +273,7 @@ pane_title="$(tmux list-panes -t test-projcfg -F '#{pane_title}' 2>/dev/null | h
 assert_eq "projcfg: local config overrides main" "ae:dummy2:dummy2" "$pane_title"
 
 # Clean up
-"$AE" discard test-projcfg 2>/dev/null || true
+"$AE" end test-projcfg 2>/dev/null || true
 sleep 0.5
 
 # ── Results ──────────────────────────────────────────────────────────

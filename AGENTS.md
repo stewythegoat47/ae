@@ -18,7 +18,7 @@ Single bash script. No dependencies beyond bash and tmux. Keep it that way.
 - No dependencies beyond bash >= 4.0, tmux, and git.
 - Session state lives in `~/.ae/sessions/`. Working directories stay clean.
 - No AI tool attribution in commits.
-- Don't let the script grow past ~1500 lines. If it's getting long, cut, don't add.
+- Keep the script lean. If it's getting bloated, cut, don't add.
 
 ## What ae is NOT
 
@@ -31,7 +31,7 @@ Single bash script. No dependencies beyond bash and tmux. Keep it that way.
 ## Structure
 
 ```
-ae                  — the script (~1250 lines)
+ae                  — the script
 tests/unit          — pure-function unit tests (bash, no deps)
 tests/integration   — integration tests (requires tmux, git)
 install             — symlink or curl|bash installer
@@ -49,7 +49,27 @@ CLAUDE.md           — @AGENTS.md
 5. Launches agents with a prompt to read the manifest
 6. Attaches
 
-`ae end` commits + pushes to `ae/<session>` branch, then cleans up. `ae discard` destroys without saving.
+`ae end` (or `ae rm`) commits + pushes to `ae/<session>` branch, then cleans up.
+
+## Agent tool capabilities
+
+ae supports multiple coding agent CLIs. They differ significantly in session handling, resume, and prompt injection. This table documents the actual behavior ae relies on — know it before modifying agent launch/resume code.
+
+| Capability | Claude Code | Codex | Gemini CLI | OpenCode |
+|---|---|---|---|---|
+| **System prompt injection** | `--append-system-prompt 'text'` | `-c developer_instructions='text'` | `-i 'text'` | None — paste as first message via tmux buffer |
+| **Session ID at launch** | `--session-id UUID` (set by ae) | None (no flag exists) | None (index-based only) | None |
+| **Session ID capture** | Immediate (ae generates UUID upfront) | Post-launch via `register-sid` helper (codex self-registers) | N/A — no UUID concept | N/A |
+| **Resume with exact session** | `--resume UUID` | `codex <flags> resume UUID` (`resume` is a subcommand) | `--resume latest` or `--resume <index>` — no UUID | No resume support |
+| **Resume fallback** | `--continue` (CWD heuristic) | Fresh start (drop `resume UUID`, keep flags) | `--resume latest` only | Fresh start |
+| **Concurrent session safety** | Full — UUID-scoped | Partial — `register-sid` picks latest session file globally, slot-scoped `.sid` files prevent cross-slot collisions | Weak — `--resume latest` picks globally | N/A |
+| **Config flags preserved on resume** | Yes (flags stay, `--resume` appended) | Yes (flags before `resume` subcommand) | Yes (flags stay, `--resume` appended) | N/A |
+
+**Key constraints to know:**
+- Codex has no `--session-name` or `--session-id` flag. The only way to get its UUID is post-launch (from `~/.codex/sessions/YYYY/MM/DD/*.jsonl` filenames). ae works around this by instructing codex via `developer_instructions` to run a `register-sid` helper script.
+- Gemini has the weakest resume: index-based, no UUID scoping. With multiple concurrent gemini agents, `--resume latest` may resume the wrong session. Nothing ae can do about this.
+- OpenCode is TUI-only with no system prompt flag. Context is injected by pasting text into the TUI as the first user message.
+- Agent names in meta use `:` as delimiter (`alias:name:session_id`). Agent names must not contain `:`.
 
 ## Config
 

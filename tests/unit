@@ -262,8 +262,8 @@ assert_eq "initial_prompt: empty for claude" \
     "" \
     "$(initial_prompt_for_cmd "claude --model opus" "/tmp/ae" "sess" "/home/user")"
 
-assert_eq "initial_prompt: empty for codex" \
-    "" \
+assert_eq "initial_prompt: Go for codex" \
+    "Go" \
     "$(initial_prompt_for_cmd "codex --yolo" "/tmp/ae" "sess" "/home/user")"
 
 assert_eq "initial_prompt: empty for gemini" \

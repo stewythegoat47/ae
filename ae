@@ -170,7 +170,7 @@ inject_session_id() {
 # Build ae workspace context string (shared by inject_ae_context and initial prompt fallback)
 build_ae_context() {
     local meta_dir="$1" session="${2:-}" work_dir="${3:-}"
-    local ctx="You are in an ae multi-agent workspace. Session: ${session}. Directory: ${work_dir}. Spawn another agent: ${meta_dir}/spawn <alias>:<name> [prompt] — always give a descriptive role name (e.g. codex:reviewer, claude:pair-programmer, claude:debugger). Send a message to another agent: ${meta_dir}/send \"<agent_name>\" \"<message>\". Check another agent: cat ${meta_dir}/workspace.md for names and pane IDs, then tmux capture-pane -t \"<pane_id>\" -p | tail -20."
+    local ctx="You are in an ae multi-agent workspace. Session: ${session}. Directory: ${work_dir}. Communication: send a message to another agent: ${meta_dir}/send \"<agent_name>\" \"<message>\". When another agent asks you something, always reply back via send to that agent when done. Do not poll or check panes for replies — answers arrive as incoming messages. Spawn a new agent: ${meta_dir}/spawn <alias>:<name> [prompt] — give a descriptive role name. See ${meta_dir}/workspace.md for agent names and details."
     local user_instr
     user_instr="$(get_config prompt.instructions)"
     [[ -n "$user_instr" ]] && ctx="${ctx} --- Workspace instructions: ${user_instr}"
@@ -791,7 +791,27 @@ _cmd_spawn() {
         echo "Error: agent name cannot contain ':' — use alias:name format" >&2
         return 1
     fi
-    local prompt="${*:-"You were spawned into an ae workspace. Read ${meta_dir}/workspace.md for details."}"
+    local user_prompt="${*:-}"
+
+    # Resolve caller's agent identity (the pane that ran spawn)
+    local caller_pane caller_agent
+    caller_pane="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
+    caller_agent=""
+    if [[ -n "$caller_pane" ]]; then
+        caller_agent="$(tmux display-message -t "$caller_pane" -p '#{@ae_agent}' 2>/dev/null || true)"
+    fi
+
+    # Build spawn prompt with reply-back instruction
+    local prompt
+    if [[ -n "$user_prompt" ]]; then
+        if [[ -n "$caller_agent" ]]; then
+            prompt="${user_prompt} — When done, reply back via: ${meta_dir}/send \"${caller_agent}\" \"<your reply>\""
+        else
+            prompt="$user_prompt"
+        fi
+    else
+        prompt="You were spawned into an ae workspace. Read ${meta_dir}/workspace.md for details."
+    fi
 
     # Read meta
     declare -A meta=()
@@ -958,10 +978,12 @@ Send a message to another agent by name:
 ${sessions_dir}/send "<agent_name>" "your message"
 \`\`\`
 
-Check another agent's recent output (use pane ID from table above):
+When another agent sends you a question or task, **reply back via send** when done:
 \`\`\`bash
-tmux capture-pane -t "<pane_id>" -p | tail -20
+${sessions_dir}/send "<their_agent_name>" "your reply"
 \`\`\`
+
+Do not poll or capture panes to wait for replies — answers arrive as incoming messages.
 
 ## Spawn
 
@@ -1024,6 +1046,10 @@ send_agent_cmd() {
             ;;
         *)
             local buf="ae-launch-$$-${pane}" launch_cmd="$cmd"
+            # Ensure Claude Code doesn't detect nesting when ae is run from inside a Claude session
+            if [[ "$cmd" == claude* ]]; then
+                launch_cmd="unset CLAUDECODE CLAUDE_CODE_SESSION; ${launch_cmd}"
+            fi
             # Resilient resume: if claude --resume UUID fails, fall back to --continue
             if [[ "$cmd" == claude*" --resume "* ]]; then
                 local fallback

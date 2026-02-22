@@ -1416,14 +1416,31 @@ if [[ "$target" != %* ]]; then
     META_DIR="$(cd "$(dirname "$0")" && pwd)"
     session="$(grep '^session=' "$META_DIR/meta" | cut -d= -f2-)"
     resolved=""
+    bare_match=""
+    bare_count=0
     while IFS=$'\t' read -r pid aagent; do
+        # Exact match on alias:name
         if [[ "$aagent" == "${target}" ]]; then
             resolved="$pid"
             break
         fi
+        # Bare name match (e.g. "lead" matches "claude:lead")
+        local aname="${aagent#*:}"
+        if [[ "$aname" == "${target}" ]]; then
+            bare_match="$pid"
+            bare_count=$((bare_count + 1))
+        fi
     done < <(tmux list-panes -t "$session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
+    # Fall back to bare name if unambiguous
+    if [[ -z "$resolved" && "$bare_count" -eq 1 ]]; then
+        resolved="$bare_match"
+    fi
     if [[ -z "$resolved" ]]; then
-        echo "Error: agent '${target}' not found" >&2
+        if [[ "$bare_count" -gt 1 ]]; then
+            echo "Error: ambiguous name '${target}' — use alias:name format" >&2
+        else
+            echo "Error: agent '${target}' not found" >&2
+        fi
         exit 1
     fi
     target="$resolved"

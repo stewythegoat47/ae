@@ -1048,7 +1048,7 @@ send_agent_cmd() {
             local buf="ae-launch-$$-${pane}" launch_cmd="$cmd"
             # Ensure Claude Code doesn't detect nesting when ae is run from inside a Claude session
             if [[ "$cmd" == claude* ]]; then
-                launch_cmd="unset CLAUDECODE CLAUDE_CODE_SESSION; ${launch_cmd}"
+                launch_cmd="env -u CLAUDECODE -u CLAUDE_CODE_SESSION ${launch_cmd}"
             fi
             # Resilient resume: if claude --resume UUID fails, fall back to --continue
             if [[ "$cmd" == claude*" --resume "* ]]; then

@@ -66,7 +66,7 @@ ae generates these scripts in `~/.ae/sessions/<name>/` for agents and humans to 
 | `retire <agent>` | Remove a spawned agent (kills pane, cleans meta, updates manifest) |
 | `register-sid [slot]` | Codex-specific: self-register session ID post-launch |
 
-All helpers resolve agent names (exact `alias:name` or bare name like `lead`), support `%pane-id` syntax, and honor `AE_TMUX_SERVER` for isolated tmux server setups.
+All helpers share a `_lib` library that provides name resolution, tmux server support, and flock serialization. Name resolution supports exact `alias:name`, bare name (e.g. `lead`), `%pane-id`, and cross-session `@session:agent` syntax. `agents --all` lists agents across all running ae sessions.
 
 ## Agent tool capabilities
 

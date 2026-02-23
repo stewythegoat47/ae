@@ -78,10 +78,21 @@ Inside a session, agents and humans have access to helper scripts in `~/.ae/sess
 send <agent> <message>         # send a message to another agent
 peek <agent> [lines]           # view recent output from an agent's pane
 agents                         # list all agents with pane IDs
+agents --all                   # list agents across all ae sessions
 focus <agent>                  # switch tmux focus to an agent's pane
 interrupt <agent> [message]    # stop an agent's current work, optionally redirect
 spawn <alias:name> [prompt]    # add a new agent to the workspace
 retire <agent>                 # remove a spawned agent cleanly
+```
+
+Agent names resolve flexibly: `codex:reviewer` (exact), `reviewer` (bare name), or `%42` (pane ID).
+
+**Cross-session communication:** Prefix with `@session:` to reach agents in other ae sessions:
+
+```bash
+send @other-feature:claude:lead "check my API changes"
+peek @other-feature:reviewer 50
+agents --all                   # discover agents across sessions
 ```
 
 Agents use these automatically when you ask them to collaborate. You can also call them directly from any pane.

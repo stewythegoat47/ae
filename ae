@@ -1164,6 +1164,19 @@ ${sessions_dir}/retire <agent_name|pane_id>
 
 Kills the pane, removes meta entry, and updates the manifest. Only works on spawned agents.
 
+## Cross-session
+
+All helpers support targeting agents in other ae sessions using \`@session:agent\` syntax:
+\`\`\`bash
+${sessions_dir}/peek @other-session:claude:lead 20
+${sessions_dir}/send @other-session:codex:reviewer "check the API"
+\`\`\`
+
+List all agents across all running sessions:
+\`\`\`bash
+${sessions_dir}/agents --all
+\`\`\`
+
 ## Rules
 
 - Coordinate file edits -- don't modify the same file simultaneously
@@ -1568,28 +1581,51 @@ for i in "${!SPAWNED_ALIASES[@]}"; do
     echo "agent.spawned.${i}=${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]}:${SPAWNED_SESSION_IDS[$i]}" >> "${AE_META}/meta"
 done
 
-# Helper: send <target> <message> — focuses pane, pastes text, submits
-cat > "${AE_META}/send" <<'SENDEOF'
-#!/usr/bin/env bash
-_ts="$(grep '^tmux_server=' "$(cd "$(dirname "$0")" && pwd)/meta" | cut -d= -f2-)"
+# Shared library sourced by all helpers — tmux shim, name resolution, locking
+cat > "${AE_META}/_lib" <<'LIBEOF'
+# tmux server shim
+_AE_META_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_ts="$(grep '^tmux_server=' "$_AE_META_DIR/meta" | cut -d= -f2-)"
 [[ -n "$_ts" ]] && tmux() { command tmux -L "$_ts" "$@"; }
-if [[ $# -lt 2 ]]; then
-    echo "Usage: send <agent-name|pane-id> <message>" >&2
-    echo "  Examples: send claude:lead \"hello\"" >&2
-    echo "           send %0 \"hello\"" >&2
-    exit 1
-fi
-target="$1"; shift
-msg="$*"
-buf="ae-send-$$"
+_AE_SESSION="$(grep '^session=' "$_AE_META_DIR/meta" | cut -d= -f2-)"
+_AE_SESSIONS_DIR="$(dirname "$_AE_META_DIR")"
 
-# Resolve agent name to pane ID (names like claude:main, codex:worker-0)
-if [[ "$target" != %* ]]; then
-    META_DIR="$(cd "$(dirname "$0")" && pwd)"
-    session="$(grep '^session=' "$META_DIR/meta" | cut -d= -f2-)"
-    resolved=""
-    bare_match=""
-    bare_count=0
+# Resolve agent target to pane ID
+# Supports: %pane-id, @session:agent-ref, alias:name, bare-name
+# Sets: AE_RESOLVED_PANE (pane ID) or exits with error
+ae_resolve() {
+    local target="$1"
+    AE_RESOLVED_PANE=""
+
+    # 1. Raw pane ID — pass through
+    if [[ "$target" == %* ]]; then
+        AE_RESOLVED_PANE="$target"
+        return 0
+    fi
+
+    # 2. Cross-session: @session:agent-ref
+    local search_session="$_AE_SESSION"
+    if [[ "$target" == @* ]]; then
+        if [[ "$target" != @*:* ]]; then
+            echo "Error: cross-session target must be @session:agent, got '${target}'" >&2
+            return 1
+        fi
+        target="${target#@}"
+        search_session="${target%%:*}"
+        target="${target#*:}"
+        if [[ -z "$search_session" || -z "$target" ]]; then
+            echo "Error: cross-session target must be @session:agent" >&2
+            return 1
+        fi
+        # Verify session exists in tmux
+        if ! tmux has-session -t "$search_session" 2>/dev/null; then
+            echo "Error: session '${search_session}' not found" >&2
+            return 1
+        fi
+    fi
+
+    # 3. Resolve within session
+    local resolved="" bare_match="" bare_count=0
     while IFS=$'\t' read -r pid aagent; do
         # Exact match on alias:name
         if [[ "$aagent" == "${target}" ]]; then
@@ -1597,116 +1633,98 @@ if [[ "$target" != %* ]]; then
             break
         fi
         # Bare name match (e.g. "lead" matches "claude:lead")
-        aname="${aagent#*:}"
+        local aname="${aagent#*:}"
         if [[ "$aname" == "${target}" ]]; then
             bare_match="$pid"
             bare_count=$((bare_count + 1))
         fi
-    done < <(tmux list-panes -t "$session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
-    # Fall back to bare name if unambiguous
+    done < <(tmux list-panes -t "$search_session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
+
     if [[ -z "$resolved" && "$bare_count" -eq 1 ]]; then
         resolved="$bare_match"
     fi
+
     if [[ -z "$resolved" ]]; then
         if [[ "$bare_count" -gt 1 ]]; then
-            echo "Error: ambiguous name '${target}' — use alias:name format" >&2
+            echo "Error: ambiguous name '${target}' in session '${search_session}' — use alias:name format" >&2
         else
-            echo "Error: agent '${target}' not found" >&2
+            echo "Error: agent '${target}' not found in session '${search_session}'" >&2
         fi
-        exit 1
+        return 1
     fi
-    target="$resolved"
+
+    AE_RESOLVED_PANE="$resolved"
+    return 0
+}
+
+# Acquire per-target flock (shared between send and interrupt, globally across sessions)
+ae_lock_target() {
+    local pane="$1"
+    local lockdir="${_AE_SESSIONS_DIR}/.locks"
+    mkdir -p "$lockdir"
+    local lockfile="${lockdir}/send-lock-${pane//[^a-zA-Z0-9]/_}"
+    exec 9>"$lockfile"
+    flock 9
+}
+
+ae_unlock_target() {
+    exec 9>&-
+}
+LIBEOF
+chmod 0700 "${AE_META}/_lib"
+
+# Helper: send <target> <message> — focuses pane, pastes text, submits
+cat > "${AE_META}/send" <<'SENDEOF'
+#!/usr/bin/env bash
+source "$(cd "$(dirname "$0")" && pwd)/_lib"
+if [[ $# -lt 2 ]]; then
+    echo "Usage: send <agent-name|pane-id|@session:agent> <message>" >&2
+    echo "  Examples: send claude:lead \"hello\"" >&2
+    echo "           send @my-feature:claude:lead \"hello\"" >&2
+    exit 1
 fi
+ae_resolve "$1" || exit 1; shift
+target="$AE_RESOLVED_PANE"
+msg="$*"
+buf="ae-send-$$"
 
-# Serialize sends to the same target pane (prevents interleaving)
-META_DIR="${META_DIR:-$(cd "$(dirname "$0")" && pwd)}"
-lockfile="${META_DIR}/.send-lock-${target//[^a-zA-Z0-9]/_}"
+ae_lock_target "$target"
 
-exec 9>"$lockfile"
-flock 9
-
-# Save current pane so we can restore focus after send
 current="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
-
-# Focus the target pane (TUIs only process input when focused)
 tmux select-pane -t "$target"
-
-# Cancel copy-mode if active
 tmux send-keys -t "$target" -X cancel 2>/dev/null || true
 
-# Paste via named buffer (avoids races with concurrent sends)
 tmux set-buffer -b "$buf" -- "$msg"
 tmux paste-buffer -d -b "$buf" -t "$target"
-
-# Brief delay so the TUI can process the pasted text before Enter
 sleep 0.3
 tmux send-keys -t "$target" C-m
-
-# Let the TUI process the submission before focus restores
 sleep 0.3
 
-# Restore focus to caller's pane
 [[ -n "$current" ]] && tmux select-pane -t "$current" 2>/dev/null || true
-
-# Release lock (fd closed on exit, but be explicit)
-exec 9>&-
+ae_unlock_target
 SENDEOF
 chmod 0700 "${AE_META}/send"
 
 # Helper: peek <target> [lines] — capture recent output from another agent's pane
 cat > "${AE_META}/peek" <<'PEEKEOF'
 #!/usr/bin/env bash
-_ts="$(grep '^tmux_server=' "$(cd "$(dirname "$0")" && pwd)/meta" | cut -d= -f2-)"
-[[ -n "$_ts" ]] && tmux() { command tmux -L "$_ts" "$@"; }
+source "$(cd "$(dirname "$0")" && pwd)/_lib"
 if [[ $# -lt 1 ]]; then
-    echo "Usage: peek <agent-name|pane-id> [lines]" >&2
+    echo "Usage: peek <agent-name|pane-id|@session:agent> [lines]" >&2
     echo "  Examples: peek codex:reviewer" >&2
-    echo "           peek codex:reviewer 50" >&2
-    echo "           peek %3 200" >&2
+    echo "           peek @my-feature:claude:lead 50" >&2
     exit 1
 fi
-target="$1"
+ae_resolve "$1" || exit 1
+target="$AE_RESOLVED_PANE"
 lines="${2:-80}"
 
-# Validate lines is numeric and clamp
 if ! [[ "$lines" =~ ^[0-9]+$ ]]; then
     echo "Error: lines must be a number, got '$lines'" >&2
     exit 1
 fi
 (( lines > 2000 )) && lines=2000
 (( lines < 1 )) && lines=1
-
-# Resolve agent name to pane ID (same logic as send)
-if [[ "$target" != %* ]]; then
-    META_DIR="$(cd "$(dirname "$0")" && pwd)"
-    session="$(grep '^session=' "$META_DIR/meta" | cut -d= -f2-)"
-    resolved=""
-    bare_match=""
-    bare_count=0
-    while IFS=$'\t' read -r pid aagent; do
-        if [[ "$aagent" == "${target}" ]]; then
-            resolved="$pid"
-            break
-        fi
-        aname="${aagent#*:}"
-        if [[ "$aname" == "${target}" ]]; then
-            bare_match="$pid"
-            bare_count=$((bare_count + 1))
-        fi
-    done < <(tmux list-panes -t "$session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
-    if [[ -z "$resolved" && "$bare_count" -eq 1 ]]; then
-        resolved="$bare_match"
-    fi
-    if [[ -z "$resolved" ]]; then
-        if [[ "$bare_count" -gt 1 ]]; then
-            echo "Error: ambiguous name '${target}' — use alias:name format" >&2
-        else
-            echo "Error: agent '${target}' not found" >&2
-        fi
-        exit 1
-    fi
-    target="$resolved"
-fi
 
 tmux capture-pane -p -J -S "-${lines}" -E - -t "$target"
 PEEKEOF
@@ -1715,134 +1733,66 @@ chmod 0700 "${AE_META}/peek"
 # Helper: agents — list all agents in the session
 cat > "${AE_META}/agents" <<'AGENTSEOF'
 #!/usr/bin/env bash
-META_DIR="$(cd "$(dirname "$0")" && pwd)"
-_ts="$(grep '^tmux_server=' "$META_DIR/meta" | cut -d= -f2-)"
-[[ -n "$_ts" ]] && tmux() { command tmux -L "$_ts" "$@"; }
-session="$(grep '^session=' "$META_DIR/meta" | cut -d= -f2-)"
+source "$(cd "$(dirname "$0")" && pwd)/_lib"
 
-printf "%-25s %-8s %s\n" "AGENT" "PANE" "PROCESS"
-while IFS='|' read -r pid aagent cmd; do
-    [[ -z "$aagent" ]] && continue
-    printf "%-25s %-8s %s\n" "$aagent" "$pid" "$cmd"
-done < <(tmux list-panes -t "$session" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null)
+if [[ "${1:-}" == "--all" ]]; then
+    printf "%-20s %-25s %-8s %s\n" "SESSION" "AGENT" "PANE" "PROCESS"
+    for meta_file in "$_AE_SESSIONS_DIR"/*/meta; do
+        [[ -f "$meta_file" ]] || continue
+        sess="$(grep '^session=' "$meta_file" | cut -d= -f2-)"
+        [[ -z "$sess" ]] && continue
+        tmux has-session -t "$sess" 2>/dev/null || continue
+        while IFS='|' read -r pid aagent cmd; do
+            [[ -z "$aagent" ]] && continue
+            printf "%-20s %-25s %-8s %s\n" "$sess" "$aagent" "$pid" "$cmd"
+        done < <(tmux list-panes -t "$sess" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null)
+    done
+else
+    printf "%-25s %-8s %s\n" "AGENT" "PANE" "PROCESS"
+    while IFS='|' read -r pid aagent cmd; do
+        [[ -z "$aagent" ]] && continue
+        printf "%-25s %-8s %s\n" "$aagent" "$pid" "$cmd"
+    done < <(tmux list-panes -t "$_AE_SESSION" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null)
+fi
 AGENTSEOF
 chmod 0700 "${AE_META}/agents"
 
 # Helper: focus <target> — switch to another agent's pane by name
 cat > "${AE_META}/focus" <<'FOCUSEOF'
 #!/usr/bin/env bash
-_ts="$(grep '^tmux_server=' "$(cd "$(dirname "$0")" && pwd)/meta" | cut -d= -f2-)"
-[[ -n "$_ts" ]] && tmux() { command tmux -L "$_ts" "$@"; }
+source "$(cd "$(dirname "$0")" && pwd)/_lib"
 if [[ $# -lt 1 ]]; then
-    echo "Usage: focus <agent-name|pane-id>" >&2
+    echo "Usage: focus <agent-name|pane-id|@session:agent>" >&2
     echo "  Examples: focus codex:reviewer" >&2
-    echo "           focus %3" >&2
+    echo "           focus @my-feature:claude:lead" >&2
     exit 1
 fi
-target="$1"
-
-# Resolve agent name to pane ID (same logic as send)
-if [[ "$target" != %* ]]; then
-    META_DIR="$(cd "$(dirname "$0")" && pwd)"
-    session="$(grep '^session=' "$META_DIR/meta" | cut -d= -f2-)"
-    resolved=""
-    bare_match=""
-    bare_count=0
-    while IFS=$'\t' read -r pid aagent; do
-        if [[ "$aagent" == "${target}" ]]; then
-            resolved="$pid"
-            break
-        fi
-        aname="${aagent#*:}"
-        if [[ "$aname" == "${target}" ]]; then
-            bare_match="$pid"
-            bare_count=$((bare_count + 1))
-        fi
-    done < <(tmux list-panes -t "$session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
-    if [[ -z "$resolved" && "$bare_count" -eq 1 ]]; then
-        resolved="$bare_match"
-    fi
-    if [[ -z "$resolved" ]]; then
-        if [[ "$bare_count" -gt 1 ]]; then
-            echo "Error: ambiguous name '${target}' — use alias:name format" >&2
-        else
-            echo "Error: agent '${target}' not found" >&2
-        fi
-        exit 1
-    fi
-    target="$resolved"
-fi
-
-tmux select-pane -t "$target"
+ae_resolve "$1" || exit 1
+tmux select-pane -t "$AE_RESOLVED_PANE"
 FOCUSEOF
 chmod 0700 "${AE_META}/focus"
 
 # Helper: interrupt <target> [message] — cancel current generation, optionally redirect
 cat > "${AE_META}/interrupt" <<'INTERRUPTEOF'
 #!/usr/bin/env bash
-_ts="$(grep '^tmux_server=' "$(cd "$(dirname "$0")" && pwd)/meta" | cut -d= -f2-)"
-[[ -n "$_ts" ]] && tmux() { command tmux -L "$_ts" "$@"; }
+source "$(cd "$(dirname "$0")" && pwd)/_lib"
 if [[ $# -lt 1 ]]; then
-    echo "Usage: interrupt <agent-name|pane-id> [message]" >&2
+    echo "Usage: interrupt <agent-name|pane-id|@session:agent> [message]" >&2
     echo "  Examples: interrupt codex:reviewer" >&2
-    echo "           interrupt codex:reviewer \"Stop — try a different approach\"" >&2
+    echo "           interrupt @my-feature:claude:lead \"Stop — try a different approach\"" >&2
     exit 1
 fi
-target="$1"; shift
+ae_resolve "$1" || exit 1; shift
+target="$AE_RESOLVED_PANE"
 msg="${*:-}"
 
-# Resolve agent name to pane ID (same logic as send)
-if [[ "$target" != %* ]]; then
-    META_DIR="$(cd "$(dirname "$0")" && pwd)"
-    session="$(grep '^session=' "$META_DIR/meta" | cut -d= -f2-)"
-    resolved=""
-    bare_match=""
-    bare_count=0
-    while IFS=$'\t' read -r pid aagent; do
-        if [[ "$aagent" == "${target}" ]]; then
-            resolved="$pid"
-            break
-        fi
-        aname="${aagent#*:}"
-        if [[ "$aname" == "${target}" ]]; then
-            bare_match="$pid"
-            bare_count=$((bare_count + 1))
-        fi
-    done < <(tmux list-panes -t "$session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
-    if [[ -z "$resolved" && "$bare_count" -eq 1 ]]; then
-        resolved="$bare_match"
-    fi
-    if [[ -z "$resolved" ]]; then
-        if [[ "$bare_count" -gt 1 ]]; then
-            echo "Error: ambiguous name '${target}' — use alias:name format" >&2
-        else
-            echo "Error: agent '${target}' not found" >&2
-        fi
-        exit 1
-    fi
-    target="$resolved"
-fi
+ae_lock_target "$target"
 
-# Serialize with send (same lock prevents interleaving with concurrent sends)
-META_DIR="${META_DIR:-$(cd "$(dirname "$0")" && pwd)}"
-lockfile="${META_DIR}/.send-lock-${target//[^a-zA-Z0-9]/_}"
-
-exec 9>"$lockfile"
-flock 9
-
-# Save current pane so we can restore focus
 current="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
-
-# Focus target pane
 tmux select-pane -t "$target"
-
-# Cancel copy-mode if active
 tmux send-keys -t "$target" -X cancel 2>/dev/null || true
-
-# Single Escape to interrupt current generation
 tmux send-keys -t "$target" Escape
 
-# If message provided, deliver it as redirect
 if [[ -n "$msg" ]]; then
     sleep 0.5
     buf="ae-interrupt-$$"
@@ -1853,11 +1803,8 @@ if [[ -n "$msg" ]]; then
     sleep 0.3
 fi
 
-# Restore focus
 [[ -n "$current" ]] && tmux select-pane -t "$current" 2>/dev/null || true
-
-# Release lock
-exec 9>&-
+ae_unlock_target
 INTERRUPTEOF
 chmod 0700 "${AE_META}/interrupt"
 

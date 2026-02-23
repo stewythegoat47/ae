@@ -61,6 +61,7 @@ ae generates these scripts in `~/.ae/sessions/<name>/` for agents and humans to 
 | `peek <agent> [lines]` | Capture recent output from another agent's pane (default 80 lines) |
 | `agents` | List all agents in the session with pane IDs and processes |
 | `focus <agent>` | Switch tmux focus to another agent's pane |
+| `interrupt <agent> [message]` | Cancel current generation, optionally send new instructions |
 | `spawn <alias:name> [prompt]` | Add a new agent to the workspace |
 | `retire <agent>` | Remove a spawned agent (kills pane, cleans meta, updates manifest) |
 | `register-sid [slot]` | Codex-specific: self-register session ID post-launch |

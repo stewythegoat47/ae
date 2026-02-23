@@ -1135,6 +1135,15 @@ Switch to another agent's pane:
 ${sessions_dir}/focus <agent_name>
 \`\`\`
 
+## Interrupt
+
+Stop an agent's current generation and optionally redirect:
+\`\`\`bash
+${sessions_dir}/interrupt <agent_name> [message]
+\`\`\`
+
+Without a message, just cancels current work. With a message, cancels then sends new instructions.
+
 ## Spawn
 
 Add another agent to this workspace:
@@ -1767,6 +1776,90 @@ fi
 tmux select-pane -t "$target"
 FOCUSEOF
 chmod 0700 "${AE_META}/focus"
+
+# Helper: interrupt <target> [message] — cancel current generation, optionally redirect
+cat > "${AE_META}/interrupt" <<'INTERRUPTEOF'
+#!/usr/bin/env bash
+_ts="$(grep '^tmux_server=' "$(cd "$(dirname "$0")" && pwd)/meta" | cut -d= -f2-)"
+[[ -n "$_ts" ]] && tmux() { command tmux -L "$_ts" "$@"; }
+if [[ $# -lt 1 ]]; then
+    echo "Usage: interrupt <agent-name|pane-id> [message]" >&2
+    echo "  Examples: interrupt codex:reviewer" >&2
+    echo "           interrupt codex:reviewer \"Stop — try a different approach\"" >&2
+    exit 1
+fi
+target="$1"; shift
+msg="${*:-}"
+
+# Resolve agent name to pane ID (same logic as send)
+if [[ "$target" != %* ]]; then
+    META_DIR="$(cd "$(dirname "$0")" && pwd)"
+    session="$(grep '^session=' "$META_DIR/meta" | cut -d= -f2-)"
+    resolved=""
+    bare_match=""
+    bare_count=0
+    while IFS=$'\t' read -r pid aagent; do
+        if [[ "$aagent" == "${target}" ]]; then
+            resolved="$pid"
+            break
+        fi
+        aname="${aagent#*:}"
+        if [[ "$aname" == "${target}" ]]; then
+            bare_match="$pid"
+            bare_count=$((bare_count + 1))
+        fi
+    done < <(tmux list-panes -t "$session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
+    if [[ -z "$resolved" && "$bare_count" -eq 1 ]]; then
+        resolved="$bare_match"
+    fi
+    if [[ -z "$resolved" ]]; then
+        if [[ "$bare_count" -gt 1 ]]; then
+            echo "Error: ambiguous name '${target}' — use alias:name format" >&2
+        else
+            echo "Error: agent '${target}' not found" >&2
+        fi
+        exit 1
+    fi
+    target="$resolved"
+fi
+
+# Serialize with send (same lock prevents interleaving with concurrent sends)
+META_DIR="${META_DIR:-$(cd "$(dirname "$0")" && pwd)}"
+lockfile="${META_DIR}/.send-lock-${target//[^a-zA-Z0-9]/_}"
+
+exec 9>"$lockfile"
+flock 9
+
+# Save current pane so we can restore focus
+current="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
+
+# Focus target pane
+tmux select-pane -t "$target"
+
+# Cancel copy-mode if active
+tmux send-keys -t "$target" -X cancel 2>/dev/null || true
+
+# Single Escape to interrupt current generation
+tmux send-keys -t "$target" Escape
+
+# If message provided, deliver it as redirect
+if [[ -n "$msg" ]]; then
+    sleep 0.5
+    buf="ae-interrupt-$$"
+    tmux set-buffer -b "$buf" -- "$msg"
+    tmux paste-buffer -d -b "$buf" -t "$target"
+    sleep 0.3
+    tmux send-keys -t "$target" C-m
+    sleep 0.3
+fi
+
+# Restore focus
+[[ -n "$current" ]] && tmux select-pane -t "$current" 2>/dev/null || true
+
+# Release lock
+exec 9>&-
+INTERRUPTEOF
+chmod 0700 "${AE_META}/interrupt"
 
 # Helper: spawn <alias> [prompt] — thin wrapper that calls ae _spawn
 cat > "${AE_META}/spawn" <<'SPAWNEOF'

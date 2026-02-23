@@ -882,6 +882,9 @@ _cmd_spawn() {
     # Regenerate workspace.md from live panes
     regenerate_manifest "$session" "$work_dir" "$origin" "$mode" "$main_pane" "$meta_dir"
 
+    # Wait for new pane's shell to initialize before sending commands
+    sleep 0.3
+
     # Launch agent with session-scoped ID and ae workspace context
     local scoped_cmd initial_msg
     scoped_cmd="$(inject_session_id "$cmd" "$session_id")"

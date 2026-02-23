@@ -107,7 +107,7 @@ assert_contains "lifecycle: list shows running status" "running" "$list_output"
 assert_eq "lifecycle: meta exists" "1" "$([[ -f "$HOME/.ae/sessions/test-life/meta" ]] && echo 1 || echo 0)"
 
 # End should clean up
-"$AE" end test-life 2>/dev/null || true
+"$AE" end -f test-life 2>/dev/null || true
 sleep 0.5
 assert_eq "lifecycle: tmux session gone after end" "1" "$(tmux has-session -t test-life 2>/dev/null && echo 0 || echo 1)"
 assert_not_exists "lifecycle: session dir cleaned" "$HOME/.ae/sessions/test-life"
@@ -138,7 +138,7 @@ wait_for_session "test-resume"
 assert_eq "resume: session re-created" "0" "$(tmux has-session -t test-resume 2>/dev/null; echo $?)"
 
 # Clean up
-"$AE" end test-resume 2>/dev/null || true
+"$AE" end -f test-resume 2>/dev/null || true
 sleep 0.5
 
 # ── Test 3: Health check in list ─────────────────────────────────────
@@ -155,7 +155,7 @@ assert_contains "health: idle agent shows ! marker" "!" "$list_output"
 assert_contains "health: agent row shows name" "dummy" "$list_output"
 
 # Clean up
-"$AE" end test-health 2>/dev/null || true
+"$AE" end -f test-health 2>/dev/null || true
 sleep 0.5
 
 # ── Test 4: Spawn persistence ────────────────────────────────────────
@@ -189,7 +189,7 @@ pane_count="$(tmux list-panes -t test-spawn 2>/dev/null | wc -l)"
 assert_eq "spawn: 2 panes after resume" "2" "$pane_count"
 
 # Clean up
-"$AE" end test-spawn 2>/dev/null || true
+"$AE" end -f test-spawn 2>/dev/null || true
 sleep 0.5
 
 # ── Test 5: End session (worktree mode) ──────────────────────────────
@@ -219,7 +219,7 @@ if [[ -n "$work_dir" ]] && [[ -d "$work_dir" ]]; then
     git -C "$work_dir" commit -q -m "test commit"
 
     # End session
-    "$AE" end test-end 2>/dev/null || true
+    "$AE" end -f test-end 2>/dev/null || true
     sleep 1
 
     # Branch should exist in the remote
@@ -251,7 +251,7 @@ status_output="$("$AE" status test-status 2>/dev/null)"
 assert_contains "status: stopped session" "stopped" "$status_output"
 
 # Clean up
-"$AE" end test-status 2>/dev/null || true
+"$AE" end -f test-status 2>/dev/null || true
 sleep 0.5
 
 # ── Test 7: Per-project config override ───────────────────────────
@@ -273,7 +273,7 @@ pane_title="$(tmux list-panes -t test-projcfg -F '#{pane_title}' 2>/dev/null | h
 assert_eq "projcfg: local config overrides main" "ae:dummy2:dummy2" "$pane_title"
 
 # Clean up
-"$AE" end test-projcfg 2>/dev/null || true
+"$AE" end -f test-projcfg 2>/dev/null || true
 sleep 0.5
 
 # ── Test 8: ae <name> use <alias> override ────────────────────────
@@ -292,7 +292,7 @@ meta_main="$(grep '^agent\.main=' "$HOME/.ae/sessions/test-use/meta" 2>/dev/null
 assert_contains "use: meta records override agent" "agent.main=dummy2:" "$meta_main"
 
 # Clean up
-"$AE" end test-use 2>/dev/null || true
+"$AE" end -f test-use 2>/dev/null || true
 sleep 0.5
 
 # ── Results ──────────────────────────────────────────────────────────

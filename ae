@@ -1415,6 +1415,7 @@ layout=${LAYOUT:-vertical}
 config=${CONFIG_FILE}
 main_pane=${PANE_IDS[0]}
 ae_path=${AE_PATH}
+tmux_server=${AE_TMUX_SERVER:-}
 agent.main=${MAIN_ALIAS}:${MAIN_NAME}:${MAIN_SESSION_ID}
 EOF
 for i in "${!WORKER_CMDS[@]}"; do
@@ -1427,6 +1428,8 @@ done
 # Helper: send <target> <message> — focuses pane, pastes text, submits
 cat > "${AE_META}/send" <<'SENDEOF'
 #!/usr/bin/env bash
+_ts="$(grep '^tmux_server=' "$(cd "$(dirname "$0")" && pwd)/meta" | cut -d= -f2-)"
+[[ -n "$_ts" ]] && tmux() { command tmux -L "$_ts" "$@"; }
 if [[ $# -lt 2 ]]; then
     echo "Usage: send <agent-name|pane-id> <message>" >&2
     echo "  Examples: send claude:lead \"hello\"" >&2
@@ -1510,6 +1513,8 @@ chmod 0700 "${AE_META}/send"
 # Helper: peek <target> [lines] — capture recent output from another agent's pane
 cat > "${AE_META}/peek" <<'PEEKEOF'
 #!/usr/bin/env bash
+_ts="$(grep '^tmux_server=' "$(cd "$(dirname "$0")" && pwd)/meta" | cut -d= -f2-)"
+[[ -n "$_ts" ]] && tmux() { command tmux -L "$_ts" "$@"; }
 if [[ $# -lt 1 ]]; then
     echo "Usage: peek <agent-name|pane-id> [lines]" >&2
     echo "  Examples: peek codex:reviewer" >&2
@@ -1568,19 +1573,23 @@ chmod 0700 "${AE_META}/peek"
 cat > "${AE_META}/agents" <<'AGENTSEOF'
 #!/usr/bin/env bash
 META_DIR="$(cd "$(dirname "$0")" && pwd)"
+_ts="$(grep '^tmux_server=' "$META_DIR/meta" | cut -d= -f2-)"
+[[ -n "$_ts" ]] && tmux() { command tmux -L "$_ts" "$@"; }
 session="$(grep '^session=' "$META_DIR/meta" | cut -d= -f2-)"
 
 printf "%-25s %-8s %s\n" "AGENT" "PANE" "PROCESS"
-while IFS=$'\t' read -r pid aagent cmd; do
-    [[ -z "$aagent" ]] && aagent="(none)"
+while IFS='|' read -r pid aagent cmd; do
+    [[ -z "$aagent" ]] && continue
     printf "%-25s %-8s %s\n" "$aagent" "$pid" "$cmd"
-done < <(tmux list-panes -t "$session" -F '#{pane_id}	#{@ae_agent}	#{pane_current_command}' 2>/dev/null)
+done < <(tmux list-panes -t "$session" -F '#{pane_id}|#{@ae_agent}|#{pane_current_command}' 2>/dev/null)
 AGENTSEOF
 chmod 0700 "${AE_META}/agents"
 
 # Helper: focus <target> — switch to another agent's pane by name
 cat > "${AE_META}/focus" <<'FOCUSEOF'
 #!/usr/bin/env bash
+_ts="$(grep '^tmux_server=' "$(cd "$(dirname "$0")" && pwd)/meta" | cut -d= -f2-)"
+[[ -n "$_ts" ]] && tmux() { command tmux -L "$_ts" "$@"; }
 if [[ $# -lt 1 ]]; then
     echo "Usage: focus <agent-name|pane-id>" >&2
     echo "  Examples: focus codex:reviewer" >&2
@@ -1630,6 +1639,8 @@ cat > "${AE_META}/spawn" <<'SPAWNEOF'
 #!/usr/bin/env bash
 set -euo pipefail
 META_DIR="$(cd "$(dirname "$0")" && pwd)"
+_ts="$(grep '^tmux_server=' "$META_DIR/meta" | cut -d= -f2-)"
+[[ -n "$_ts" ]] && export AE_TMUX_SERVER="$_ts"
 AE_PATH="$(grep '^ae_path=' "$META_DIR/meta" | cut -d= -f2-)"
 if [[ ! -x "$AE_PATH" ]]; then
     AE_PATH="$(command -v ae 2>/dev/null || true)"

@@ -915,6 +915,118 @@ _cmd_spawn() {
     echo "Spawned ${alias_name}:${spawn_name} in pane $pane_id"
 }
 
+# Internal: retire a spawned agent (called via retire helper → ae _retire)
+_cmd_retire() {
+    local meta_dir="$1"; shift
+    local target="$1"
+
+    # Read meta
+    declare -A meta=()
+    while IFS='=' read -r k v; do
+        case "$k" in
+            mode|origin|session|work_dir|layout|config|main_pane) meta["$k"]="$v" ;;
+        esac
+    done < "$meta_dir/meta"
+
+    local session="${meta[session]:-}" work_dir="${meta[work_dir]:-}"
+    local main_pane="${meta[main_pane]:-}" origin="${meta[origin]:-}" mode="${meta[mode]:-}"
+
+    if [[ -z "$session" ]]; then
+        echo "Error: session not found in metadata" >&2; return 1
+    fi
+
+    # Resolve agent name to pane ID
+    local resolved="" pane_agent=""
+    if [[ "$target" == %* ]]; then
+        resolved="$target"
+        pane_agent="$(tmux display-message -t "$resolved" -p '#{@ae_agent}' 2>/dev/null || true)"
+    else
+        local bare_match="" bare_count=0
+        while IFS=$'\t' read -r pid aagent; do
+            if [[ "$aagent" == "$target" ]]; then
+                resolved="$pid"
+                pane_agent="$aagent"
+                break
+            fi
+            local aname="${aagent#*:}"
+            if [[ "$aname" == "$target" ]]; then
+                bare_match="$pid"
+                pane_agent="$aagent"
+                bare_count=$((bare_count + 1))
+            fi
+        done < <(tmux list-panes -t "$session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
+        if [[ -z "$resolved" && "$bare_count" -eq 1 ]]; then
+            resolved="$bare_match"
+        elif [[ -z "$resolved" ]]; then
+            if [[ "$bare_count" -gt 1 ]]; then
+                echo "Error: ambiguous name '${target}' — use alias:name format" >&2
+            else
+                echo "Error: agent '${target}' not found" >&2
+            fi
+            return 1
+        fi
+    fi
+
+    # Prevent retiring the main agent
+    if [[ "$resolved" == "$main_pane" ]]; then
+        echo "Error: cannot retire the main agent — use 'ae end' instead" >&2
+        return 1
+    fi
+
+    # Verify it's a spawned agent (exists in meta as agent.spawned.*)
+    local spawned_key=""
+    while IFS='=' read -r k v; do
+        if [[ "$k" == agent.spawned.* ]]; then
+            local entry_alias_name="${v%%:*}"
+            local entry_rest="${v#*:}"
+            local entry_name="${entry_rest%%:*}"
+            if [[ "${entry_alias_name}:${entry_name}" == "$pane_agent" ]]; then
+                spawned_key="$k"
+                break
+            fi
+        fi
+    done < "$meta_dir/meta"
+
+    if [[ -z "$spawned_key" ]]; then
+        # Also check worker agents
+        if grep -q "^agent\\.worker\\..*=${pane_agent}:" "$meta_dir/meta" 2>/dev/null; then
+            echo "Error: cannot retire a worker agent — use 'ae end' instead" >&2
+        else
+            echo "Error: agent '${target}' not found in spawned agents" >&2
+        fi
+        return 1
+    fi
+
+    # Kill the pane
+    tmux kill-pane -t "$resolved" 2>/dev/null || true
+
+    # Remove the meta entry (flock-protected)
+    {
+        flock -w 5 200 || { echo "Error: could not lock meta" >&2; return 1; }
+        local tmpfile="${meta_dir}/meta.tmp.$$"
+        grep -v "^${spawned_key}=" "$meta_dir/meta" > "$tmpfile"
+        mv "$tmpfile" "$meta_dir/meta"
+    } 200>"$meta_dir/meta.lock"
+
+    # Rebalance layout
+    local layout="${meta[layout]:-vertical}"
+    if [[ "$layout" == "vertical" ]]; then
+        tmux select-layout -t "$session" even-horizontal 2>/dev/null || true
+    else
+        tmux select-layout -t "$session" even-vertical 2>/dev/null || true
+    fi
+
+    # Regenerate manifest
+    CONFIG_FILE="${meta[config]:-}"
+    AE_LOCAL_CONFIG=""
+    if [[ -n "$origin" ]] && [[ -f "${origin}/.ae/config" ]]; then
+        AE_LOCAL_CONFIG="${origin}/.ae/config"
+    fi
+    regenerate_manifest "$session" "$work_dir" "$origin" "$mode" "$main_pane" "$meta_dir"
+
+    echo "Retired ${pane_agent} (pane ${resolved})"
+}
+
 # Regenerate workspace.md from live tmux pane state
 # Scans panes with ae: title prefix, builds agent table
 regenerate_manifest() {
@@ -1022,6 +1134,15 @@ Always give spawned agents a descriptive role name (e.g. \`codex:reviewer\`, \`c
 
 Available aliases: ${available_aliases} (from ~/.ae/config)
 
+## Retire
+
+Remove a spawned agent from the workspace:
+\`\`\`bash
+${sessions_dir}/retire <agent_name>
+\`\`\`
+
+Kills the pane, removes meta entry, and updates the manifest. Only works on spawned agents.
+
 ## Rules
 
 - Coordinate file edits -- don't modify the same file simultaneously
@@ -1102,6 +1223,7 @@ case "${1:-}" in
     stop)           cmd_stop "${2:-}"; exit $? ;;
     end|rm)              cmd_end "${2:-}" "${3:-}"; exit $? ;;
     _spawn)              _cmd_spawn "${@:2}"; exit $? ;;
+    _retire)             _cmd_retire "${@:2}"; exit $? ;;
     help|-h|--help) cmd_help; exit 0 ;;
 esac
 
@@ -1656,6 +1778,31 @@ fi
 exec "$AE_PATH" _spawn "$META_DIR" "$@"
 SPAWNEOF
 chmod 0700 "${AE_META}/spawn"
+
+# Helper: retire <agent> — remove a spawned agent from the session
+cat > "${AE_META}/retire" <<'RETIREEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+META_DIR="$(cd "$(dirname "$0")" && pwd)"
+_ts="$(grep '^tmux_server=' "$META_DIR/meta" | cut -d= -f2-)"
+[[ -n "$_ts" ]] && export AE_TMUX_SERVER="$_ts"
+AE_PATH="$(grep '^ae_path=' "$META_DIR/meta" | cut -d= -f2-)"
+if [[ ! -x "$AE_PATH" ]]; then
+    AE_PATH="$(command -v ae 2>/dev/null || true)"
+fi
+if [[ -z "${AE_PATH:-}" ]] || [[ ! -x "$AE_PATH" ]]; then
+    echo "Error: ae not found (expected at $(grep '^ae_path=' "$META_DIR/meta" | cut -d= -f2-))" >&2
+    exit 1
+fi
+if [[ $# -lt 1 ]]; then
+    echo "Usage: retire <agent-name|pane-id>" >&2
+    echo "  Examples: retire codex:researcher" >&2
+    echo "           retire %5" >&2
+    exit 1
+fi
+exec "$AE_PATH" _retire "$META_DIR" "$@"
+RETIREEOF
+chmod 0700 "${AE_META}/retire"
 
 # Helper: register-sid — codex agents run this to self-register their session ID
 cat > "${AE_META}/register-sid" <<'REGSIDEOF'

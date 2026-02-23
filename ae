@@ -905,8 +905,8 @@ _cmd_spawn() {
         tmux select-pane -t "$pane_id"
         tmux set-buffer -b "$buf" -- "$prompt"
         tmux paste-buffer -d -b "$buf" -t "$pane_id"
-        sleep 0.1
-        tmux send-keys -t "$pane_id" Enter
+        sleep 0.3
+        tmux send-keys -t "$pane_id" C-m
     fi
 
     echo "Spawned ${alias_name}:${spawn_name} in pane $pane_id"
@@ -1022,8 +1022,8 @@ send_agent_cmd() {
                         tmux select-pane -t "$pane"
                         tmux set-buffer -b "$buf" -- "$prompt"
                         tmux paste-buffer -d -b "$buf" -t "$pane"
-                        sleep 0.1
-                        tmux send-keys -t "$pane" Enter
+                        sleep 0.3
+                        tmux send-keys -t "$pane" C-m
                     fi
                 ) &
             fi
@@ -1038,8 +1038,8 @@ send_agent_cmd() {
                         tmux select-pane -t "$pane"
                         tmux set-buffer -b "$buf" -- "$prompt"
                         tmux paste-buffer -d -b "$buf" -t "$pane"
-                        sleep 0.1
-                        tmux send-keys -t "$pane" Enter
+                        sleep 0.3
+                        tmux send-keys -t "$pane" C-m
                     fi
                 ) &
             fi
@@ -1462,8 +1462,11 @@ tmux set-buffer -b "$buf" -- "$msg"
 tmux paste-buffer -d -b "$buf" -t "$target"
 
 # Brief delay so the TUI can process the pasted text before Enter
-sleep 0.1
-tmux send-keys -t "$target" Enter
+sleep 0.3
+tmux send-keys -t "$target" C-m
+
+# Let the TUI process the submission before focus restores
+sleep 0.3
 SENDEOF
 chmod 0700 "${AE_META}/send"
 

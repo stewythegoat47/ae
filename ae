@@ -997,6 +997,20 @@ ${sessions_dir}/peek <agent_name> [lines]
 
 Default: 80 lines. Max: 2000.
 
+## Agents
+
+List all agents in the session:
+\`\`\`bash
+${sessions_dir}/agents
+\`\`\`
+
+## Focus
+
+Switch to another agent's pane:
+\`\`\`bash
+${sessions_dir}/focus <agent_name>
+\`\`\`
+
 ## Spawn
 
 Add another agent to this workspace:
@@ -1538,6 +1552,67 @@ fi
 tmux capture-pane -p -J -S "-${lines}" -E - -t "$target"
 PEEKEOF
 chmod 0700 "${AE_META}/peek"
+
+# Helper: agents — list all agents in the session
+cat > "${AE_META}/agents" <<'AGENTSEOF'
+#!/usr/bin/env bash
+META_DIR="$(cd "$(dirname "$0")" && pwd)"
+session="$(grep '^session=' "$META_DIR/meta" | cut -d= -f2-)"
+
+printf "%-25s %-8s %s\n" "AGENT" "PANE" "PROCESS"
+while IFS=$'\t' read -r pid aagent cmd; do
+    [[ -z "$aagent" ]] && aagent="(none)"
+    printf "%-25s %-8s %s\n" "$aagent" "$pid" "$cmd"
+done < <(tmux list-panes -t "$session" -F '#{pane_id}	#{@ae_agent}	#{pane_current_command}' 2>/dev/null)
+AGENTSEOF
+chmod 0700 "${AE_META}/agents"
+
+# Helper: focus <target> — switch to another agent's pane by name
+cat > "${AE_META}/focus" <<'FOCUSEOF'
+#!/usr/bin/env bash
+if [[ $# -lt 1 ]]; then
+    echo "Usage: focus <agent-name|pane-id>" >&2
+    echo "  Examples: focus codex:reviewer" >&2
+    echo "           focus %3" >&2
+    exit 1
+fi
+target="$1"
+
+# Resolve agent name to pane ID (same logic as send)
+if [[ "$target" != %* ]]; then
+    META_DIR="$(cd "$(dirname "$0")" && pwd)"
+    session="$(grep '^session=' "$META_DIR/meta" | cut -d= -f2-)"
+    resolved=""
+    bare_match=""
+    bare_count=0
+    while IFS=$'\t' read -r pid aagent; do
+        if [[ "$aagent" == "${target}" ]]; then
+            resolved="$pid"
+            break
+        fi
+        aname="${aagent#*:}"
+        if [[ "$aname" == "${target}" ]]; then
+            bare_match="$pid"
+            bare_count=$((bare_count + 1))
+        fi
+    done < <(tmux list-panes -t "$session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
+    if [[ -z "$resolved" && "$bare_count" -eq 1 ]]; then
+        resolved="$bare_match"
+    fi
+    if [[ -z "$resolved" ]]; then
+        if [[ "$bare_count" -gt 1 ]]; then
+            echo "Error: ambiguous name '${target}' — use alias:name format" >&2
+        else
+            echo "Error: agent '${target}' not found" >&2
+        fi
+        exit 1
+    fi
+    target="$resolved"
+fi
+
+tmux select-pane -t "$target"
+FOCUSEOF
+chmod 0700 "${AE_META}/focus"
 
 # Helper: spawn <alias> [prompt] — thin wrapper that calls ae _spawn
 cat > "${AE_META}/spawn" <<'SPAWNEOF'

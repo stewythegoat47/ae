@@ -70,6 +70,21 @@ ae end my-feature              # commit + push to ae/my-feature branch, clean up
 ae rm my-experiment            # same as ae end
 ```
 
+## Session helpers
+
+Inside a session, agents and humans have access to helper scripts in `~/.ae/sessions/<name>/`:
+
+```bash
+send <agent> <message>         # send a message to another agent
+peek <agent> [lines]           # view recent output from an agent's pane
+agents                         # list all agents with pane IDs
+focus <agent>                  # switch tmux focus to an agent's pane
+spawn <alias:name> [prompt]    # add a new agent to the workspace
+retire <agent>                 # remove a spawned agent cleanly
+```
+
+Agents use these automatically when you ask them to collaborate. You can also call them directly from any pane.
+
 ## Config
 
 `~/.ae/config` is auto-created on first run. Per-project overrides go in `.ae/config` in your project directory.
@@ -132,7 +147,7 @@ When run inside an ae session, `stop`, `end`, and `status` detect the current se
 
 ## How it works
 
-Each agent gets a workspace context injected into its system prompt (Claude Code's `--append-system-prompt`, Codex's `developer_instructions`). That context tells it who the other agents are, how to reach them by name, and how to spawn new ones. The actual communication happens through simple shell helpers (`send`, `spawn`) that ae generates in `~/.ae/sessions/` -- agents call them like any other CLI tool.
+Each agent gets a workspace context injected into its system prompt (Claude Code's `--append-system-prompt`, Codex's `developer_instructions`, Gemini's `-i`). That context tells it who the other agents are, how to reach them by name, and how to spawn or retire agents. The actual communication happens through shell helpers (`send`, `peek`, `spawn`, `retire`, etc.) that ae generates in `~/.ae/sessions/` -- agents call them like any other CLI tool.
 
 No custom protocols, no frameworks. Just system prompts and bash scripts that agents already know how to use.
 

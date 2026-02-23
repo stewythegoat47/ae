@@ -45,11 +45,27 @@ CLAUDE.md           — @AGENTS.md
 1. Parses `~/.ae/config` for agent commands and layout
 2. Uses current dir (default `--local`), full copy (`--copy`), or git worktree (`--worktree`)
 3. Creates tmux session with main agent (+ workers if configured)
-4. Generates helpers (`send`, `spawn`) and workspace manifest
-5. Launches agents with a prompt to read the manifest
+4. Generates session helpers and workspace manifest in `~/.ae/sessions/<name>/`
+5. Launches agents with workspace context injected into their system prompts
 6. Attaches
 
 `ae end` (or `ae rm`) commits + pushes to `ae/<session>` branch, then cleans up.
+
+## Session helpers
+
+ae generates these scripts in `~/.ae/sessions/<name>/` for agents and humans to use:
+
+| Helper | Purpose |
+|--------|---------|
+| `send <agent> <message>` | Send a message to another agent's pane (serialized with flock) |
+| `peek <agent> [lines]` | Capture recent output from another agent's pane (default 80 lines) |
+| `agents` | List all agents in the session with pane IDs and processes |
+| `focus <agent>` | Switch tmux focus to another agent's pane |
+| `spawn <alias:name> [prompt]` | Add a new agent to the workspace |
+| `retire <agent>` | Remove a spawned agent (kills pane, cleans meta, updates manifest) |
+| `register-sid [slot]` | Codex-specific: self-register session ID post-launch |
+
+All helpers resolve agent names (exact `alias:name` or bare name like `lead`), support `%pane-id` syntax, and honor `AE_TMUX_SERVER` for isolated tmux server setups.
 
 ## Agent tool capabilities
 

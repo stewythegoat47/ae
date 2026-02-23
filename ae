@@ -988,6 +988,15 @@ ${sessions_dir}/send "<their_agent_name>" "your reply"
 
 Do not poll or capture panes to wait for replies — answers arrive as incoming messages.
 
+## Peek
+
+View recent output from another agent's pane:
+\`\`\`bash
+${sessions_dir}/peek <agent_name> [lines]
+\`\`\`
+
+Default: 80 lines. Max: 2000.
+
 ## Spawn
 
 Add another agent to this workspace:
@@ -1428,7 +1437,7 @@ if [[ "$target" != %* ]]; then
             break
         fi
         # Bare name match (e.g. "lead" matches "claude:lead")
-        local aname="${aagent#*:}"
+        aname="${aagent#*:}"
         if [[ "$aname" == "${target}" ]]; then
             bare_match="$pid"
             bare_count=$((bare_count + 1))
@@ -1472,6 +1481,63 @@ tmux send-keys -t "$target" C-m
 sleep 0.3
 SENDEOF
 chmod 0700 "${AE_META}/send"
+
+# Helper: peek <target> [lines] — capture recent output from another agent's pane
+cat > "${AE_META}/peek" <<'PEEKEOF'
+#!/usr/bin/env bash
+if [[ $# -lt 1 ]]; then
+    echo "Usage: peek <agent-name|pane-id> [lines]" >&2
+    echo "  Examples: peek codex:reviewer" >&2
+    echo "           peek codex:reviewer 50" >&2
+    echo "           peek %3 200" >&2
+    exit 1
+fi
+target="$1"
+lines="${2:-80}"
+
+# Validate lines is numeric and clamp
+if ! [[ "$lines" =~ ^[0-9]+$ ]]; then
+    echo "Error: lines must be a number, got '$lines'" >&2
+    exit 1
+fi
+(( lines > 2000 )) && lines=2000
+(( lines < 1 )) && lines=1
+
+# Resolve agent name to pane ID (same logic as send)
+if [[ "$target" != %* ]]; then
+    META_DIR="$(cd "$(dirname "$0")" && pwd)"
+    session="$(grep '^session=' "$META_DIR/meta" | cut -d= -f2-)"
+    resolved=""
+    bare_match=""
+    bare_count=0
+    while IFS=$'\t' read -r pid aagent; do
+        if [[ "$aagent" == "${target}" ]]; then
+            resolved="$pid"
+            break
+        fi
+        aname="${aagent#*:}"
+        if [[ "$aname" == "${target}" ]]; then
+            bare_match="$pid"
+            bare_count=$((bare_count + 1))
+        fi
+    done < <(tmux list-panes -t "$session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
+    if [[ -z "$resolved" && "$bare_count" -eq 1 ]]; then
+        resolved="$bare_match"
+    fi
+    if [[ -z "$resolved" ]]; then
+        if [[ "$bare_count" -gt 1 ]]; then
+            echo "Error: ambiguous name '${target}' — use alias:name format" >&2
+        else
+            echo "Error: agent '${target}' not found" >&2
+        fi
+        exit 1
+    fi
+    target="$resolved"
+fi
+
+tmux capture-pane -p -J -S "-${lines}" -E - -t "$target"
+PEEKEOF
+chmod 0700 "${AE_META}/peek"
 
 # Helper: spawn <alias> [prompt] — thin wrapper that calls ae _spawn
 cat > "${AE_META}/spawn" <<'SPAWNEOF'

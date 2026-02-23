@@ -1472,10 +1472,15 @@ if [[ "$target" != %* ]]; then
     target="$resolved"
 fi
 
+# Serialize sends to the same target pane (prevents interleaving)
+META_DIR="${META_DIR:-$(cd "$(dirname "$0")" && pwd)}"
+lockfile="${META_DIR}/.send-lock-${target//[^a-zA-Z0-9]/_}"
+
+exec 9>"$lockfile"
+flock 9
+
 # Save current pane so we can restore focus after send
 current="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
-restore_focus() { [[ -n "$current" ]] && tmux select-pane -t "$current" 2>/dev/null; }
-trap restore_focus EXIT
 
 # Focus the target pane (TUIs only process input when focused)
 tmux select-pane -t "$target"
@@ -1493,6 +1498,12 @@ tmux send-keys -t "$target" C-m
 
 # Let the TUI process the submission before focus restores
 sleep 0.3
+
+# Restore focus to caller's pane
+[[ -n "$current" ]] && tmux select-pane -t "$current" 2>/dev/null || true
+
+# Release lock (fd closed on exit, but be explicit)
+exec 9>&-
 SENDEOF
 chmod 0700 "${AE_META}/send"
 

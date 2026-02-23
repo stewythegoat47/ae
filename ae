@@ -938,8 +938,20 @@ _cmd_retire() {
     # Resolve agent name to pane ID
     local resolved="" pane_agent=""
     if [[ "$target" == %* ]]; then
-        resolved="$target"
-        pane_agent="$(tmux display-message -t "$resolved" -p '#{@ae_agent}' 2>/dev/null || true)"
+        # Validate pane belongs to this session
+        local pane_in_session=false
+        while IFS=$'\t' read -r pid aagent; do
+            if [[ "$pid" == "$target" ]]; then
+                resolved="$target"
+                pane_agent="$aagent"
+                pane_in_session=true
+                break
+            fi
+        done < <(tmux list-panes -t "$session" -F '#{pane_id}	#{@ae_agent}' 2>/dev/null)
+        if [[ "$pane_in_session" == false ]]; then
+            echo "Error: pane '${target}' not found in session '${session}'" >&2
+            return 1
+        fi
     else
         local bare_match="" bare_count=0
         while IFS=$'\t' read -r pid aagent; do
@@ -1004,7 +1016,7 @@ _cmd_retire() {
     {
         flock -w 5 200 || { echo "Error: could not lock meta" >&2; return 1; }
         local tmpfile="${meta_dir}/meta.tmp.$$"
-        grep -v "^${spawned_key}=" "$meta_dir/meta" > "$tmpfile"
+        grep -Fv "${spawned_key}=" "$meta_dir/meta" > "$tmpfile"
         mv "$tmpfile" "$meta_dir/meta"
     } 200>"$meta_dir/meta.lock"
 
@@ -1138,7 +1150,7 @@ Available aliases: ${available_aliases} (from ~/.ae/config)
 
 Remove a spawned agent from the workspace:
 \`\`\`bash
-${sessions_dir}/retire <agent_name>
+${sessions_dir}/retire <agent_name|pane_id>
 \`\`\`
 
 Kills the pane, removes meta entry, and updates the manifest. Only works on spawned agents.

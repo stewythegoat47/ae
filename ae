@@ -1233,9 +1233,9 @@ send_agent_cmd() {
             fi
             # Resilient resume: if claude --resume UUID fails, fall back to --continue
             if [[ "$cmd" == claude*" --resume "* ]]; then
-                local fallback
-                fallback="$(echo "$cmd" | sed 's/--resume [^ ]*/--continue/')"
-                launch_cmd="${cmd} || ${fallback}"
+                local fallback_continue
+                fallback_continue="$(echo "$launch_cmd" | sed 's/--resume [^ ]*/--continue/')"
+                launch_cmd="${launch_cmd} || ${fallback_continue}"
             fi
             if [[ -n "$prompt" ]]; then
                 # Buffer-paste avoids tmux escaping issues; shell-escape single quotes in prompt
@@ -1297,6 +1297,20 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
     fi
 fi
 
+# On resume: restore config paths from meta (ensures agent aliases resolve from original config)
+if [[ -f "${SESSIONS_DIR}/${SESSION}/meta" ]]; then
+    _stored_config="$(read_session_meta "$SESSION" config)"
+    if [[ -n "$_stored_config" && -f "$_stored_config" ]]; then
+        CONFIG_FILE="$_stored_config"
+    fi
+    _stored_origin="$(read_session_meta "$SESSION" origin)"
+    if [[ -n "$_stored_origin" && -f "${_stored_origin}/.ae/config" ]]; then
+        AE_LOCAL_CONFIG="${_stored_origin}/.ae/config"
+    else
+        AE_LOCAL_CONFIG=""
+    fi
+fi
+
 # --- Validate config before creating anything ---
 # Parse alias[:name] — e.g. "claude:lead" → alias=claude, name=lead
 # If no name given, name defaults to the alias itself
@@ -1335,6 +1349,12 @@ if [[ -n "$COPY_MODE_OVERRIDE" ]]; then
 else
     COPY_MODE="$(get_config workspace.copy)"
     COPY_MODE="${COPY_MODE:-local}"
+fi
+
+# On resume: force mode from stored meta to prevent drift (CLI flag still overrides)
+if [[ -z "$COPY_MODE_OVERRIDE" ]] && [[ -f "${SESSIONS_DIR}/${SESSION}/meta" ]]; then
+    _stored_mode="$(read_session_meta "$SESSION" mode)"
+    [[ -n "$_stored_mode" ]] && COPY_MODE="$_stored_mode"
 fi
 
 if [[ "$COPY_MODE" != "git" ]] && [[ "$COPY_MODE" != "full" ]] && [[ "$COPY_MODE" != "local" ]]; then
@@ -1409,11 +1429,22 @@ if [[ "$COPY_MODE" == "local" ]]; then
     # Resume if session meta exists from a previous run (e.g. after reboot)
     if [[ -f "${SESSIONS_DIR}/${SESSION}/meta" ]]; then
         RESUMING=true
-        echo "Resuming session ${SESSION}..."
+        # Restore original work_dir so agents resume in the correct CWD
+        # (Claude Code's --resume is scoped to ~/.claude/projects/<encoded-CWD>/)
+        _stored_wd="$(read_session_meta "$SESSION" work_dir)"
+        if [[ -n "$_stored_wd" && -d "$_stored_wd" ]]; then
+            WORK_DIR="$_stored_wd"
+        fi
+        _stored_origin="$(read_session_meta "$SESSION" origin)"
+        [[ -n "$_stored_origin" ]] && ORIGIN_DIR="$_stored_origin"
+        echo "Resuming session ${SESSION} (dir: ${WORK_DIR})..."
     fi
 elif [[ -d "$WORK_DIR" ]]; then
     # Existing worktree — resume it (e.g. after reboot)
     RESUMING=true
+    # Restore ORIGIN_DIR from meta (used by cleanup and env vars)
+    _stored_origin="$(read_session_meta "$SESSION" origin)"
+    [[ -n "$_stored_origin" ]] && ORIGIN_DIR="$_stored_origin"
     echo "Resuming session ${SESSION}..."
 else
     mkdir -p "$WORK_DIR"

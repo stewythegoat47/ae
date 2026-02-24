@@ -295,6 +295,35 @@ assert_contains "use: meta records override agent" "agent.main=dummy2:" "$meta_m
 "$AE" end -f test-use 2>/dev/null || true
 sleep 0.5
 
+# ── Test 9: Resume from different CWD (local mode) ─────────────────
+
+REPO9="$(setup_repo)"
+(cd "$REPO9" && "$AE" --local test-cwd &) 2>/dev/null
+wait_for_session "test-cwd"
+sleep 1
+
+# Verify meta stores work_dir
+meta_work_dir="$(grep '^work_dir=' "$HOME/.ae/sessions/test-cwd/meta" | cut -d= -f2-)"
+assert_eq "cwd-resume: meta has work_dir" "$REPO9" "$meta_work_dir"
+
+# Kill tmux session (simulate reboot)
+tmux kill-session -t test-cwd 2>/dev/null || true
+sleep 0.5
+
+# Resume from a DIFFERENT directory
+REPO9_OTHER="$(setup_repo)"
+(cd "$REPO9_OTHER" && "$AE" --local test-cwd &) 2>/dev/null
+wait_for_session "test-cwd"
+sleep 1
+
+# Verify the tmux session's pane CWD is the ORIGINAL directory, not the new one
+pane_cwd="$(tmux display-message -t test-cwd -p '#{pane_current_path}' 2>/dev/null)"
+assert_eq "cwd-resume: pane CWD restored to original" "$REPO9" "$pane_cwd"
+
+# Clean up
+"$AE" end -f test-cwd 2>/dev/null || true
+sleep 0.5
+
 # ── Results ──────────────────────────────────────────────────────────
 
 echo ""

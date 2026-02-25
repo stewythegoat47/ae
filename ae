@@ -2033,15 +2033,20 @@ MAX_NUDGES=2
 HB_DIR="${META_DIR}/.heartbeat"
 mkdir -p "$HB_DIR"
 
-# Background-safe send: paste message without switching focus (never fails)
+# Send nudge to pane (select-pane required for codex TUI to process Enter)
 hb_send() {
     local pane="$1" msg="$2"
     local buf="ae-hb-$$-${pane//[^a-zA-Z0-9]/_}"
     ae_lock_target "$pane"
+    local current
+    current="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
+    tmux select-pane -t "$pane" 2>/dev/null || true
     tmux send-keys -t "$pane" -X cancel 2>/dev/null || true
     tmux set-buffer -b "$buf" -- "$msg" \; \
         paste-buffer -d -b "$buf" -t "$pane" \; \
         send-keys -t "$pane" C-m 2>/dev/null || true
+    sleep 0.3
+    [[ -n "$current" ]] && tmux select-pane -t "$current" 2>/dev/null || true
     ae_unlock_target
 }
 

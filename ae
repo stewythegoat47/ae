@@ -1277,6 +1277,7 @@ send_agent_cmd() {
                 tmux set-buffer -b "$buf" -- "$launch_cmd"
             fi
             tmux paste-buffer -d -b "$buf" -t "$pane"
+            sleep 0.3
             tmux send-keys -t "$pane" C-m
             ;;
     esac

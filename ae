@@ -87,6 +87,17 @@ get_config() {
     printf '%s' "$result"
 }
 
+# Atomic paste-and-submit: set buffer, paste, and send C-m in one tmux server call.
+# Eliminates race between paste-buffer and send-keys that caused agents to not start.
+# Usage: tmux_paste_submit <pane> <text>
+tmux_paste_submit() {
+    local pane="$1" text="$2"
+    local buf="ae-ps-$$-${pane}"
+    tmux set-buffer -b "$buf" -- "$text" \; \
+        paste-buffer -d -b "$buf" -t "$pane" \; \
+        send-keys -t "$pane" C-m
+}
+
 # Map command prefix to human-readable tool name
 tool_name_from_cmd() {
     case "$1" in
@@ -927,12 +938,8 @@ _cmd_spawn() {
     # For agents with system prompt injection, send spawn prompt separately
     if [[ -z "$initial_msg" ]]; then
         sleep 1
-        local buf="ae-spawn-$$"
         tmux select-pane -t "$pane_id"
-        tmux set-buffer -b "$buf" -- "$prompt"
-        tmux paste-buffer -d -b "$buf" -t "$pane_id"
-        sleep 0.3
-        tmux send-keys -t "$pane_id" C-m
+        tmux_paste_submit "$pane_id" "$prompt"
     fi
 
     echo "Spawned ${alias_name}:${spawn_name} in pane $pane_id"
@@ -1229,12 +1236,8 @@ send_agent_cmd() {
                 (
                     sleep 3 &&
                         if tmux list-panes -F '#{pane_id} #{pane_current_command}' | grep -q "^${pane} codex$"; then
-                            local buf="ae-launch-$$-${pane}"
                             tmux select-pane -t "$pane"
-                            tmux set-buffer -b "$buf" -- "$prompt"
-                            tmux paste-buffer -d -b "$buf" -t "$pane"
-                            sleep 0.3
-                            tmux send-keys -t "$pane" C-m
+                            tmux_paste_submit "$pane" "$prompt"
                         fi
                 ) &
             fi
@@ -1246,18 +1249,14 @@ send_agent_cmd() {
                 (
                     sleep 3 &&
                         if tmux list-panes -F '#{pane_id} #{pane_current_command}' | grep -q "^${pane} opencode$"; then
-                            local buf="ae-launch-$$-${pane}"
                             tmux select-pane -t "$pane"
-                            tmux set-buffer -b "$buf" -- "$prompt"
-                            tmux paste-buffer -d -b "$buf" -t "$pane"
-                            sleep 0.3
-                            tmux send-keys -t "$pane" C-m
+                            tmux_paste_submit "$pane" "$prompt"
                         fi
                 ) &
             fi
             ;;
         *)
-            local buf="ae-launch-$$-${pane}" launch_cmd="$cmd"
+            local launch_cmd="$cmd"
             # Ensure Claude Code doesn't detect nesting when ae is run from inside a Claude session
             if [[ "$cmd" == claude* ]]; then
                 launch_cmd="env -u CLAUDECODE -u CLAUDE_CODE_SESSION ${launch_cmd}"
@@ -1270,15 +1269,12 @@ send_agent_cmd() {
                 launch_cmd="${launch_cmd} || ${fallback_continue}"
             fi
             if [[ -n "$prompt" ]]; then
-                # Buffer-paste avoids tmux escaping issues; shell-escape single quotes in prompt
+                # Shell-escape single quotes in prompt
                 local escaped_prompt="${prompt//\'/\'\\\'\'}"
-                tmux set-buffer -b "$buf" -- "${launch_cmd} '${escaped_prompt}'"
+                tmux_paste_submit "$pane" "${launch_cmd} '${escaped_prompt}'"
             else
-                tmux set-buffer -b "$buf" -- "$launch_cmd"
+                tmux_paste_submit "$pane" "$launch_cmd"
             fi
-            tmux paste-buffer -d -b "$buf" -t "$pane"
-            sleep 0.3
-            tmux send-keys -t "$pane" C-m
             ;;
     esac
 }
@@ -1799,11 +1795,10 @@ current="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
 tmux select-pane -t "$target"
 tmux send-keys -t "$target" -X cancel 2>/dev/null || true
 
-tmux set-buffer -b "$buf" -- "$msg"
-tmux paste-buffer -d -b "$buf" -t "$target"
-sleep 0.3
-tmux send-keys -t "$target" C-m
-sleep 0.3
+tmux set-buffer -b "$buf" -- "$msg" \; \
+    paste-buffer -d -b "$buf" -t "$target" \; \
+    send-keys -t "$target" C-m
+sleep 0.3 # let target TUI process input before focus restore
 
 [[ -n "$current" ]] && tmux select-pane -t "$current" 2>/dev/null || true
 ae_unlock_target
@@ -1925,11 +1920,10 @@ tmux send-keys -t "$target" Escape
 if [[ -n "$msg" ]]; then
     sleep 0.5
     buf="ae-interrupt-$$"
-    tmux set-buffer -b "$buf" -- "$msg"
-    tmux paste-buffer -d -b "$buf" -t "$target"
-    sleep 0.3
-    tmux send-keys -t "$target" C-m
-    sleep 0.3
+    tmux set-buffer -b "$buf" -- "$msg" \; \
+        paste-buffer -d -b "$buf" -t "$target" \; \
+        send-keys -t "$target" C-m
+    sleep 0.3 # let target TUI process input before focus restore
 fi
 
 [[ -n "$current" ]] && tmux select-pane -t "$current" 2>/dev/null || true

@@ -108,14 +108,22 @@ release PART="patch":
     git add -u
     git diff --cached --quiet || git commit -m "chore(release): $TAG"
 
-    # Tag + GitHub release
+    # Tag + push
     git tag "$TAG"
     git push {{GIT_REMOTE}} "$TAG"
     git push {{GIT_REMOTE}} {{default_branch}}
-    REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
-    gh api "repos/$REPO/releases" \
-        -f tag_name="$TAG" -f target_commitish={{default_branch}} -f name="$TAG" \
-        -f body="$RELEASE_BODY" -f make_latest=true > /dev/null
+
+    # GitHub release (best-effort, requires gh CLI with repo access)
+    if command -v gh &>/dev/null; then
+        REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
+        if [[ -n "$REPO" ]]; then
+            gh api "repos/$REPO/releases" \
+                -f tag_name="$TAG" -f target_commitish={{default_branch}} -f name="$TAG" \
+                -f body="$RELEASE_BODY" -f make_latest=true > /dev/null 2>&1 \
+                && echo "GitHub release created" \
+                || echo "Warning: GitHub release failed (tag pushed, create release manually)" >&2
+        fi
+    fi
 
     echo "Released $TAG"
 

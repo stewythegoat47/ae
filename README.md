@@ -1,5 +1,6 @@
 # ae - agentic engineering
 
+[![Release](https://img.shields.io/badge/release-0.1.0-blue.svg)](https://github.com/clemens33/ae/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Bash](https://img.shields.io/badge/bash-%3E%3D4.0-green.svg)](https://www.gnu.org/software/bash/)
 [![tmux](https://img.shields.io/badge/requires-tmux-1BB91F.svg)](https://github.com/tmux/tmux)
@@ -76,6 +77,7 @@ Inside a session, agents and humans have access to helper scripts in `~/.ae/sess
 
 ```bash
 send <agent> <message>         # send a message to another agent
+ask <agent> <question>         # ask another agent (embeds reply-to so they respond back)
 peek <agent> [lines]           # view recent output from an agent's pane
 agents                         # list all agents with pane IDs
 agents --all                   # list agents across all ae sessions

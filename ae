@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ae - agentic engineering: tmux-based multi-agent workspace
 set -euo pipefail
+AE_VERSION="0.1.0"
 
 CONFIG_DIR="${HOME}/.ae"
 CONFIG_FILE="${CONFIG_DIR}/config"
@@ -780,6 +781,7 @@ cmd_help() {
     echo "  ae status [name]       Show recent agent output without attaching"
     echo "  ae stop [name]         Stop session, keep state for resume (or 'ae stop all')"
     echo "  ae end|rm [-f] [name]  End session: commit, push, clean up (or 'ae end all')"
+    echo "  ae version             Show version"
     echo "  ae help                Show this help"
     echo ""
     echo "Modes: --local (default), --copy (full cp -a), --worktree (git worktree)."
@@ -1269,6 +1271,7 @@ case "${1:-}" in
     _spawn)              _cmd_spawn "${@:2}"; exit $? ;;
     _retire)             _cmd_retire "${@:2}"; exit $? ;;
     help|-h|--help) cmd_help; exit 0 ;;
+    version|--version|-V) echo "ae ${AE_VERSION}"; exit 0 ;;
 esac
 
 # --- Parse flags ---

@@ -193,6 +193,10 @@ assert_eq "ae_context: contains peek helper" \
     "1" \
     "$([[ "$result" == *"peek <agent>"* ]] && echo 1 || echo 0)"
 
+assert_eq "ae_context: contains concurrent collaboration warning" \
+    "1" \
+    "$([[ "$result" == *"CONCURRENT COLLABORATION"* ]] && echo 1 || echo 0)"
+
 assert_eq "ae_context: contains session name" \
     "1" \
     "$([[ "$result" == *"my-session"* ]] && echo 1 || echo 0)"

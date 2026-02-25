@@ -58,6 +58,7 @@ ae generates these scripts in `~/.ae/sessions/<name>/` for agents and humans to 
 | Helper | Purpose |
 |--------|---------|
 | `send <agent> <message>` | Send a message to another agent's pane (serialized with flock) |
+| `ask <agent> <question>` | Like send, but embeds caller identity and reply-to command in the message |
 | `peek <agent> [lines]` | Capture recent output from another agent's pane (default 80 lines) |
 | `agents` | List all agents in the session with pane IDs and processes |
 | `focus <agent>` | Switch tmux focus to another agent's pane |

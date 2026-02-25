@@ -177,9 +177,21 @@ assert_eq "ae_context: contains meta dir" \
     "1" \
     "$([[ "$result" == *"/tmp/ae-test/workspace.md"* ]] && echo 1 || echo 0)"
 
+assert_eq "ae_context: contains helpers path" \
+    "1" \
+    "$([[ "$result" == *"helpers in /tmp/ae-test/"* ]] && echo 1 || echo 0)"
+
 assert_eq "ae_context: contains spawn helper" \
     "1" \
-    "$([[ "$result" == *"/tmp/ae-test/spawn"* ]] && echo 1 || echo 0)"
+    "$([[ "$result" == *"spawn <alias"* ]] && echo 1 || echo 0)"
+
+assert_eq "ae_context: contains ask helper" \
+    "1" \
+    "$([[ "$result" == *"ask <agent>"* ]] && echo 1 || echo 0)"
+
+assert_eq "ae_context: contains peek helper" \
+    "1" \
+    "$([[ "$result" == *"peek <agent>"* ]] && echo 1 || echo 0)"
 
 assert_eq "ae_context: contains session name" \
     "1" \
@@ -275,9 +287,9 @@ assert_eq "initial_prompt: opencode gets context" \
     "1" \
     "$([[ "$result_opencode" == *"ae multi-agent workspace"* ]] && echo 1 || echo 0)"
 
-assert_eq "initial_prompt: opencode gets spawn helper path" \
+assert_eq "initial_prompt: opencode gets helpers path" \
     "1" \
-    "$([[ "$result_opencode" == *"/tmp/ae/spawn"* ]] && echo 1 || echo 0)"
+    "$([[ "$result_opencode" == *"helpers in /tmp/ae/"* ]] && echo 1 || echo 0)"
 
 # ── gen_uuid ─────────────────────────────────────────────────────────
 

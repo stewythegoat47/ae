@@ -170,7 +170,17 @@ inject_session_id() {
 # Build ae workspace context string (shared by inject_ae_context and initial prompt fallback)
 build_ae_context() {
     local meta_dir="$1" session="${2:-}" work_dir="${3:-}"
-    local ctx="You are in an ae multi-agent workspace. Session: ${session}. Directory: ${work_dir}. Communication: send a message to another agent: ${meta_dir}/send \"<agent_name>\" \"<message>\". When another agent asks you something, always reply back via send to that agent when done. Do not poll or check panes for replies — answers arrive as incoming messages. Spawn a new agent: ${meta_dir}/spawn <alias>:<name> [prompt] — give a descriptive role name. See ${meta_dir}/workspace.md for agent names and details."
+    local ctx="You are in an ae multi-agent workspace. Session: ${session}. Directory: ${work_dir}."
+    ctx+=" Available helpers in ${meta_dir}/:"
+    ctx+=" send <agent> <message> — send a message to another agent."
+    ctx+=" ask <agent> <question> — ask another agent a question (embeds reply-to so they know to respond back to you)."
+    ctx+=" peek <agent> [lines] — read recent output from another agent's pane (default 80 lines)."
+    ctx+=" agents — list all agents in this session."
+    ctx+=" spawn <alias>:<name> [prompt] — add a new agent to the workspace."
+    ctx+=" retire <agent> — remove a spawned agent."
+    ctx+=" interrupt <agent> [message] — cancel an agent's current generation, optionally redirect."
+    ctx+=" focus <agent> — switch tmux focus to another agent's pane."
+    ctx+=" When another agent asks you something (via ask or send), ALWAYS reply back using: ${meta_dir}/send '<asking_agent>' '<your answer>'. Do not poll or check panes for replies — answers arrive as incoming messages. See ${meta_dir}/workspace.md for agent names and details."
     local user_instr
     user_instr="$(get_config prompt.instructions)"
     [[ -n "$user_instr" ]] && ctx="${ctx} --- Workspace instructions: ${user_instr}"
@@ -214,7 +224,7 @@ initial_prompt_for_cmd() {
         opencode*)
             local ctx
             ctx="$(build_ae_context "$meta_dir" "$session" "$work_dir")"
-            printf '%s' "IMPORTANT — read and internalize these workspace instructions before doing anything else. They apply for the ENTIRE session. ${ctx} Confirm you understood by briefly listing the other agents and available tools (send, spawn)."
+            printf '%s' "IMPORTANT — read and internalize these workspace instructions before doing anything else. They apply for the ENTIRE session. ${ctx} Confirm you understood by briefly listing the other agents and available helpers."
             ;;
         *) echo "" ;;  # unknown agents: no injection (no reliable delivery method)
     esac
@@ -1735,6 +1745,30 @@ sleep 0.3
 ae_unlock_target
 SENDEOF
 chmod 0700 "${AE_META}/send"
+
+# Helper: ask <target> <question> — structured send with reply-to metadata
+cat > "${AE_META}/ask" <<'ASKEOF'
+#!/usr/bin/env bash
+source "$(cd "$(dirname "$0")" && pwd)/_lib"
+META_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ $# -lt 2 ]]; then
+    echo "Usage: ask <agent-name|pane-id|@session:agent> <question>" >&2
+    echo "  Like send, but embeds your identity and reply command in the message." >&2
+    exit 1
+fi
+target_name="$1"; shift
+question="$*"
+# Auto-detect caller identity from tmux pane (@ae_agent = alias:name)
+self="$(tmux display-message -p '#{@ae_agent}' 2>/dev/null || true)"
+if [[ -z "$self" ]]; then
+    echo "Warning: could not detect caller identity (no @ae_agent on this pane). Using 'send' instead." >&2
+    exec "${META_DIR}/send" "$target_name" "$question"
+fi
+# Use alias:name for unambiguous reply-to (bare names can collide)
+msg="[from: ${self}] ${question} --- When done, reply with: ${META_DIR}/send '${self}' '<your findings>'"
+exec "${META_DIR}/send" "$target_name" "$msg"
+ASKEOF
+chmod 0700 "${AE_META}/ask"
 
 # Helper: peek <target> [lines] — capture recent output from another agent's pane
 cat > "${AE_META}/peek" <<'PEEKEOF'

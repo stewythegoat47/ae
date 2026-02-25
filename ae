@@ -39,7 +39,7 @@ layout = vertical'
 # Create default config if missing
 if [[ ! -f "$CONFIG_FILE" ]]; then
     mkdir -p "$CONFIG_DIR"
-    printf '%s\n' "$DEFAULT_CONFIG" > "$CONFIG_FILE"
+    printf '%s\n' "$DEFAULT_CONFIG" >"$CONFIG_FILE"
     echo "Created default config at $CONFIG_FILE"
 fi
 
@@ -48,6 +48,7 @@ fi
 parse_config() {
     local section="" file
     for file in "$CONFIG_FILE" "${AE_LOCAL_CONFIG:-}"; do
+        # shellcheck disable=SC2015 # safe: if file is empty or missing, continue either way
         [[ -n "$file" ]] && [[ -f "$file" ]] || continue
         section=""
         while IFS= read -r line; do
@@ -65,12 +66,13 @@ parse_config() {
             elif [[ "$line" =~ ^([a-zA-Z_][a-zA-Z0-9_-]*)\ *=\ *(.+)$ ]]; then
                 local val="${BASH_REMATCH[2]}"
                 val="${val%%#*}"
+                # shellcheck disable=SC2001
                 val="$(echo "$val" | sed 's/[[:space:]]*$//')"
                 printf '%s\n' "${section}.${BASH_REMATCH[1]}=${val}"
             else
                 continue
             fi
-        done < "$file"
+        done <"$file"
     done
 }
 
@@ -89,10 +91,10 @@ get_config() {
 tool_name_from_cmd() {
     case "$1" in
         claude*) echo "claude code" ;;
-        codex*)  echo "codex" ;;
+        codex*) echo "codex" ;;
         gemini*) echo "gemini cli" ;;
         opencode*) echo "opencode" ;;
-        *)       echo "$1" ;;
+        *) echo "$1" ;;
     esac
 }
 
@@ -134,21 +136,21 @@ resume_cmd_from_cmd() {
             if [[ -n "$session_id" ]]; then
                 # Preserve flags (e.g. --yolo) from original command for the resume subcommand
                 local codex_flags="${clean#codex}"
-                codex_flags="${codex_flags# }"  # strip leading space
+                codex_flags="${codex_flags# }" # strip leading space
                 if [[ -n "$codex_flags" ]]; then
                     echo "codex ${codex_flags} resume ${session_id}"
                 else
                     echo "codex resume ${session_id}"
                 fi
             else
-                echo "$clean"  # fresh start (--last is unreliable for concurrent sessions)
+                echo "$clean" # fresh start (--last is unreliable for concurrent sessions)
             fi
             ;;
         gemini*)
             clean="$(strip_gemini_prompt_flags "$clean")"
-            echo "${clean} --resume latest"  # index-based only, no UUID scoping
+            echo "${clean} --resume latest" # index-based only, no UUID scoping
             ;;
-        *)  echo "$clean" ;;  # fresh start for unknown agents
+        *) echo "$clean" ;; # fresh start for unknown agents
     esac
 }
 
@@ -161,7 +163,7 @@ inject_session_id() {
     if [[ -n "$session_id" ]]; then
         case "$cmd" in
             claude*) echo "${clean} --session-id ${session_id}" ;;
-            *)       echo "$clean" ;;
+            *) echo "$clean" ;;
         esac
     else
         echo "$clean"
@@ -220,14 +222,14 @@ inject_ae_context() {
 initial_prompt_for_cmd() {
     local cmd="$1" meta_dir="$2" session="${3:-}" work_dir="${4:-}"
     case "$cmd" in
-        claude*|gemini*) echo "" ;;  # context injected via CLI flag
-        codex*) echo "Go" ;;  # codex needs a user message to act on developer_instructions
+        claude* | gemini*) echo "" ;; # context injected via CLI flag
+        codex*) echo "Go" ;;          # codex needs a user message to act on developer_instructions
         opencode*)
             local ctx
             ctx="$(build_ae_context "$meta_dir" "$session" "$work_dir")"
             printf '%s' "IMPORTANT — read and internalize these workspace instructions before doing anything else. They apply for the ENTIRE session. ${ctx} Confirm you understood by briefly listing the other agents and available helpers."
             ;;
-        *) echo "" ;;  # unknown agents: no injection (no reliable delivery method)
+        *) echo "" ;; # unknown agents: no injection (no reliable delivery method)
     esac
 }
 
@@ -260,11 +262,11 @@ detect_current_session() {
 # Detect tool kind from command (for staleness checks on resume)
 tool_kind_from_cmd() {
     case "$1" in
-        claude*)   echo "claude" ;;
-        codex*)    echo "codex" ;;
-        gemini*)   echo "gemini" ;;
+        claude*) echo "claude" ;;
+        codex*) echo "codex" ;;
+        gemini*) echo "gemini" ;;
         opencode*) echo "opencode" ;;
-        *)         echo "unknown" ;;
+        *) echo "unknown" ;;
     esac
 }
 
@@ -276,12 +278,12 @@ capture_codex_session_id() {
     local sid_file="${meta_dir}/codex.${slot}.sid"
     local captured=""
     # Poll for self-registered session ID (codex writes to codex.sid via developer_instructions)
-    local attempt
-    for attempt in 1 2 3 4 5 6; do
+    local _attempt
+    for _attempt in 1 2 3 4 5 6; do
         sleep 5
         if [[ -f "$sid_file" ]]; then
-            captured="$(< "$sid_file")"
-            captured="${captured//[$'\n\r ']/}"  # strip whitespace
+            captured="$(<"$sid_file")"
+            captured="${captured//[$'\n\r ']/}" # strip whitespace
             rm -f "$sid_file"
             break
         fi
@@ -304,8 +306,6 @@ capture_codex_session_id() {
 # For _cmd_spawn: RESUMING is unset → always generates new IDs
 resolve_agent_session_id() {
     local cmd="$1" slot="$2"
-    local kind
-    kind="$(tool_kind_from_cmd "$cmd")"
     local session_id=""
     if [[ "${RESUMING:-}" == true ]] && [[ -n "${SESSION:-}" ]]; then
         local stored
@@ -321,7 +321,7 @@ resolve_agent_session_id() {
     if [[ -z "$session_id" ]]; then
         case "$cmd" in
             claude*) session_id="$(gen_uuid)" ;;
-            *)       session_id="pending" ;;
+            *) session_id="pending" ;;
         esac
     fi
     echo "$session_id"
@@ -361,7 +361,7 @@ read_session_meta() {
                 printf '%s' "$v"
                 return
             fi
-        done < "$meta"
+        done <"$meta"
     fi
 }
 
@@ -411,7 +411,7 @@ cleanup_session() {
     fi
 
     # Always clean session state from SESSIONS_DIR
-    rm -rf "${SESSIONS_DIR}/${session_name}"
+    rm -rf "${SESSIONS_DIR:?}/${session_name:?}"
     # Legacy cleanup: old worktree-nested and local-mode paths
     rm -rf "${WORKTREES_DIR}/${session_name}/.ae/${session_name}" 2>/dev/null || true
     if [[ -n "$origin" ]] && [[ -d "${origin}/.ae/${session_name}" ]]; then
@@ -491,8 +491,8 @@ end_session() {
     # git/full mode: commit + push if in a git repo
     if [[ -d "$wdir" ]] && git -C "$wdir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         # Check for uncommitted changes
-        if ! git -C "$wdir" diff --quiet 2>/dev/null || ! git -C "$wdir" diff --cached --quiet 2>/dev/null || \
-           [[ -n "$(git -C "$wdir" ls-files --others --exclude-standard 2>/dev/null)" ]]; then
+        if ! git -C "$wdir" diff --quiet 2>/dev/null || ! git -C "$wdir" diff --cached --quiet 2>/dev/null ||
+            [[ -n "$(git -C "$wdir" ls-files --others --exclude-standard 2>/dev/null)" ]]; then
             echo "Committing changes in $session_name..."
             git -C "$wdir" add -A
             local ts
@@ -568,11 +568,12 @@ _parse_agent_entry() {
     printf '%s:%s\t%s\n' "$alias" "$name" "$short"
 }
 
+# shellcheck disable=SC2059 # format strings stored in variables intentionally
 cmd_list() {
     local sessions has_output=false
     # Column widths: SESSION(24) STATUS(8) MODE(10) ORIGIN(rest)
     local hdr='%-24s  %-8s  %-10s  %s\n'
-    local indent='%-24s  %-8s  %-10s  %s\n'  # same widths for target indent
+    local indent='%-24s  %-8s  %-10s  %s\n' # same widths for target indent
     sessions="$(list_ae_sessions)"
     if [[ -n "$sessions" ]]; then
         has_output=true
@@ -598,7 +599,7 @@ cmd_list() {
             while IFS=$'\t' read -r ae_agent pane_cmd; do
                 [[ -n "$ae_agent" ]] || continue
                 case "$pane_cmd" in
-                    bash|fish|zsh|sh|dash) _alive["$ae_agent"]="!" ;;
+                    bash | fish | zsh | sh | dash) _alive["$ae_agent"]="!" ;;
                     *) _alive["$ae_agent"]="" ;;
                 esac
             done < <(tmux list-panes -t "$name" -F '#{@ae_agent}	#{pane_current_command}' 2>/dev/null)
@@ -608,9 +609,9 @@ cmd_list() {
                 IFS=$'\t' read -r aname asid < <(_parse_agent_entry "$mv")
                 local marker="${_alive[$aname]:-}"
                 printf "  %-22s  %-8s  %s\n" "$aname" "$asid" "$marker"
-            done <<< "$meta_blob"
+            done <<<"$meta_blob"
             unset _alive
-        done <<< "$sessions"
+        done <<<"$sessions"
     fi
     while IFS= read -r name; do
         if [[ "$has_output" == false ]]; then
@@ -633,7 +634,7 @@ cmd_list() {
             local aname asid
             IFS=$'\t' read -r aname asid < <(_parse_agent_entry "$mv")
             printf "  %-22s  %s\n" "$aname" "$asid"
-        done <<< "$meta_blob"
+        done <<<"$meta_blob"
     done < <(iter_stopped_sessions)
     if [[ "$has_output" == false ]]; then
         echo "No ae sessions."
@@ -690,7 +691,7 @@ cmd_stop() {
                 found=true
                 tmux kill-session -t "$s" 2>/dev/null || true
                 echo "Stopped $s"
-            done <<< "$sessions"
+            done <<<"$sessions"
         fi
         if [[ "$found" == false ]]; then
             echo "No running ae sessions."
@@ -723,7 +724,7 @@ cmd_end() {
         }
     fi
     if [[ "$force" != true ]]; then
-        printf "End session '$target'? This will commit, push, and clean up. [y/N] "
+        printf "End session '%s'? This will commit, push, and clean up. [y/N] " "$target"
         read -r -n 1 reply
         echo
         if [[ ! "$reply" =~ ^[Yy]$ ]]; then
@@ -739,16 +740,16 @@ cmd_end() {
             while IFS= read -r s; do
                 [[ -z "$s" ]] && continue
                 found=true
-                end_session "$s" || failures=$(( failures + 1 ))
-            done <<< "$sessions"
+                end_session "$s" || failures=$((failures + 1))
+            done <<<"$sessions"
         fi
         while IFS= read -r name; do
             found=true
-            end_session "$name" || failures=$(( failures + 1 ))
+            end_session "$name" || failures=$((failures + 1))
         done < <(iter_stopped_sessions)
         if [[ "$found" == false ]]; then
             echo "No ae sessions."
-        elif (( failures > 0 )); then
+        elif ((failures > 0)); then
             echo "${failures} session(s) failed to end. See errors above." >&2
             return 1
         fi
@@ -765,7 +766,6 @@ cmd_end() {
         fi
     fi
 }
-
 
 cmd_help() {
     echo "ae - agentic engineering: tmux multi-agent workspace"
@@ -793,8 +793,10 @@ cmd_help() {
 
 # Internal: spawn a new agent pane (called via spawn helper → ae _spawn)
 _cmd_spawn() {
-    local meta_dir="$1"; shift
-    local alias_arg="$1"; shift
+    local meta_dir="$1"
+    shift
+    local alias_arg="$1"
+    shift
     local alias_name="${alias_arg%%:*}"
     local spawn_name=""
     [[ "$alias_arg" == *:* ]] && spawn_name="${alias_arg#*:}"
@@ -829,19 +831,21 @@ _cmd_spawn() {
     declare -A meta=()
     while IFS='=' read -r k v; do
         case "$k" in
-            mode|origin|session|work_dir|layout|config|main_pane) meta["$k"]="$v" ;;
+            mode | origin | session | work_dir | layout | config | main_pane) meta["$k"]="$v" ;;
         esac
-    done < "$meta_dir/meta"
+    done <"$meta_dir/meta"
 
     local session="${meta[session]:-}" work_dir="${meta[work_dir]:-}" layout="${meta[layout]:-vertical}"
     local config_file="${meta[config]:-}" main_pane="${meta[main_pane]:-}"
     local origin="${meta[origin]:-}" mode="${meta[mode]:-}"
 
     if [[ -z "$session" ]]; then
-        echo "Error: session not found in metadata" >&2; return 1
+        echo "Error: session not found in metadata" >&2
+        return 1
     fi
     if ! tmux has-session -t "$session" 2>/dev/null; then
-        echo "Error: session '$session' not running" >&2; return 1
+        echo "Error: session '$session' not running" >&2
+        return 1
     fi
 
     CONFIG_FILE="$config_file"
@@ -853,7 +857,8 @@ _cmd_spawn() {
     local cmd
     cmd="$(get_config "agents.${alias_name}")"
     if [[ -z "$cmd" ]]; then
-        echo "Error: agent '${alias_name}' not defined in $config_file" >&2; return 1
+        echo "Error: agent '${alias_name}' not defined in $config_file" >&2
+        return 1
     fi
 
     # Split pane
@@ -876,15 +881,18 @@ _cmd_spawn() {
     session_id="$(resolve_agent_session_id "$cmd" "spawned.0")"
     tool_kind="$(tool_kind_from_cmd "$cmd")"
     {
-        flock -w 5 200 || { echo "Error: could not lock meta" >&2; return 1; }
+        flock -w 5 200 || {
+            echo "Error: could not lock meta" >&2
+            return 1
+        }
         next_idx=0
         while grep -q "^agent\\.spawned\\.${next_idx}=" "$meta_dir/meta" 2>/dev/null; do
-            next_idx=$(( next_idx + 1 ))
+            next_idx=$((next_idx + 1))
         done
         slot="spawned.${next_idx}"
         [[ -z "$spawn_name" ]] && spawn_name="helper-${next_idx}"
         session_id="$(resolve_agent_session_id "$cmd" "$slot")"
-        echo "agent.${slot}=${alias_name}:${spawn_name}:${session_id}" >> "$meta_dir/meta"
+        echo "agent.${slot}=${alias_name}:${spawn_name}:${session_id}" >>"$meta_dir/meta"
     } 200>"$meta_dir/meta.lock"
 
     # Label pane (after flock so spawn_name is resolved)
@@ -929,22 +937,24 @@ _cmd_spawn() {
 
 # Internal: retire a spawned agent (called via retire helper → ae _retire)
 _cmd_retire() {
-    local meta_dir="$1"; shift
+    local meta_dir="$1"
+    shift
     local target="$1"
 
     # Read meta
     declare -A meta=()
     while IFS='=' read -r k v; do
         case "$k" in
-            mode|origin|session|work_dir|layout|config|main_pane) meta["$k"]="$v" ;;
+            mode | origin | session | work_dir | layout | config | main_pane) meta["$k"]="$v" ;;
         esac
-    done < "$meta_dir/meta"
+    done <"$meta_dir/meta"
 
     local session="${meta[session]:-}" work_dir="${meta[work_dir]:-}"
     local main_pane="${meta[main_pane]:-}" origin="${meta[origin]:-}" mode="${meta[mode]:-}"
 
     if [[ -z "$session" ]]; then
-        echo "Error: session not found in metadata" >&2; return 1
+        echo "Error: session not found in metadata" >&2
+        return 1
     fi
 
     # Resolve agent name to pane ID
@@ -1009,7 +1019,7 @@ _cmd_retire() {
                 break
             fi
         fi
-    done < "$meta_dir/meta"
+    done <"$meta_dir/meta"
 
     if [[ -z "$spawned_key" ]]; then
         # Also check worker agents
@@ -1026,9 +1036,12 @@ _cmd_retire() {
 
     # Remove the meta entry (flock-protected)
     {
-        flock -w 5 200 || { echo "Error: could not lock meta" >&2; return 1; }
+        flock -w 5 200 || {
+            echo "Error: could not lock meta" >&2
+            return 1
+        }
         local tmpfile="${meta_dir}/meta.tmp.$$"
-        grep -Fv "${spawned_key}=" "$meta_dir/meta" > "$tmpfile"
+        grep -Fv "${spawned_key}=" "$meta_dir/meta" >"$tmpfile"
         mv "$tmpfile" "$meta_dir/meta"
     } 200>"$meta_dir/meta.lock"
 
@@ -1060,8 +1073,8 @@ regenerate_manifest() {
     # Describe copy mode
     local copy_desc
     case "$mode" in
-        git)   copy_desc="You are working on a git worktree (detached HEAD from the origin). Push to remote and merge from there." ;;
-        full)  copy_desc="You are working on a full copy of the project. Push to remote and merge from there." ;;
+        git) copy_desc="You are working on a git worktree (detached HEAD from the origin). Push to remote and merge from there." ;;
+        full) copy_desc="You are working on a full copy of the project. Push to remote and merge from there." ;;
         local) copy_desc="You are working directly in the project directory (local mode). Changes affect the original files immediately." ;;
     esac
 
@@ -1071,7 +1084,7 @@ regenerate_manifest() {
         [[ -n "$ae_agent" ]] || continue
         local alias_name="${ae_agent%%:*}"
         local agent_name="${ae_agent#*:}"
-        agent_name="${agent_name%%:*}"  # guard against nested colons
+        agent_name="${agent_name%%:*}" # guard against nested colons
         local role="agent"
         [[ "$pane_id" == "$main_pane" ]] && role="lead"
         local cmd tool_label
@@ -1095,7 +1108,7 @@ regenerate_manifest() {
         fi
     done < <(parse_config)
 
-    cat > "$manifest" <<EOF
+    cat >"$manifest" <<EOF
 # ae workspace
 
 Session: ${sess}
@@ -1206,18 +1219,20 @@ send_agent_cmd() {
             # Only send prompt if codex is still running (avoids shell execution on resume failure)
             # Fallback: if resume fails (stale UUID), start fresh — strip "resume <uuid>" but keep flags
             local codex_fallback
+            # shellcheck disable=SC2001
             codex_fallback="$(echo "$cmd" | sed 's/ *resume [^ ]*//')"
             tmux send-keys -t "$pane" "$cmd || $codex_fallback" C-m
             if [[ -n "$prompt" ]]; then
-                (sleep 3 && \
-                    if tmux list-panes -F '#{pane_id} #{pane_current_command}' | grep -q "^${pane} codex$"; then
-                        local buf="ae-launch-$$-${pane}"
-                        tmux select-pane -t "$pane"
-                        tmux set-buffer -b "$buf" -- "$prompt"
-                        tmux paste-buffer -d -b "$buf" -t "$pane"
-                        sleep 0.3
-                        tmux send-keys -t "$pane" C-m
-                    fi
+                (
+                    sleep 3 &&
+                        if tmux list-panes -F '#{pane_id} #{pane_current_command}' | grep -q "^${pane} codex$"; then
+                            local buf="ae-launch-$$-${pane}"
+                            tmux select-pane -t "$pane"
+                            tmux set-buffer -b "$buf" -- "$prompt"
+                            tmux paste-buffer -d -b "$buf" -t "$pane"
+                            sleep 0.3
+                            tmux send-keys -t "$pane" C-m
+                        fi
                 ) &
             fi
             ;;
@@ -1225,15 +1240,16 @@ send_agent_cmd() {
             # OpenCode has no system prompt flag — launch TUI, then paste context as first message
             tmux send-keys -t "$pane" "$cmd" C-m
             if [[ -n "$prompt" ]]; then
-                (sleep 3 && \
-                    if tmux list-panes -F '#{pane_id} #{pane_current_command}' | grep -q "^${pane} opencode$"; then
-                        local buf="ae-launch-$$-${pane}"
-                        tmux select-pane -t "$pane"
-                        tmux set-buffer -b "$buf" -- "$prompt"
-                        tmux paste-buffer -d -b "$buf" -t "$pane"
-                        sleep 0.3
-                        tmux send-keys -t "$pane" C-m
-                    fi
+                (
+                    sleep 3 &&
+                        if tmux list-panes -F '#{pane_id} #{pane_current_command}' | grep -q "^${pane} opencode$"; then
+                            local buf="ae-launch-$$-${pane}"
+                            tmux select-pane -t "$pane"
+                            tmux set-buffer -b "$buf" -- "$prompt"
+                            tmux paste-buffer -d -b "$buf" -t "$pane"
+                            sleep 0.3
+                            tmux send-keys -t "$pane" C-m
+                        fi
                 ) &
             fi
             ;;
@@ -1246,6 +1262,7 @@ send_agent_cmd() {
             # Resilient resume: if claude --resume UUID fails, fall back to --continue
             if [[ "$cmd" == claude*" --resume "* ]]; then
                 local fallback_continue
+                # shellcheck disable=SC2001
                 fallback_continue="$(echo "$launch_cmd" | sed 's/--resume [^ ]*/--continue/')"
                 launch_cmd="${launch_cmd} || ${fallback_continue}"
             fi
@@ -1264,14 +1281,38 @@ send_agent_cmd() {
 
 # --- Dispatcher ---
 case "${1:-}" in
-    list|ls)        cmd_list; exit 0 ;;
-    status)         cmd_status "${2:-}"; exit $? ;;
-    stop)           cmd_stop "${2:-}"; exit $? ;;
-    end|rm)              cmd_end "${2:-}" "${3:-}"; exit $? ;;
-    _spawn)              _cmd_spawn "${@:2}"; exit $? ;;
-    _retire)             _cmd_retire "${@:2}"; exit $? ;;
-    help|-h|--help) cmd_help; exit 0 ;;
-    version|--version|-V) echo "ae ${AE_VERSION}"; exit 0 ;;
+    list | ls)
+        cmd_list
+        exit 0
+        ;;
+    status)
+        cmd_status "${2:-}"
+        exit $?
+        ;;
+    stop)
+        cmd_stop "${2:-}"
+        exit $?
+        ;;
+    end | rm)
+        cmd_end "${2:-}" "${3:-}"
+        exit $?
+        ;;
+    _spawn)
+        _cmd_spawn "${@:2}"
+        exit $?
+        ;;
+    _retire)
+        _cmd_retire "${@:2}"
+        exit $?
+        ;;
+    help | -h | --help)
+        cmd_help
+        exit 0
+        ;;
+    version | --version | -V)
+        echo "ae ${AE_VERSION}"
+        exit 0
+        ;;
 esac
 
 # --- Parse flags ---
@@ -1280,18 +1321,35 @@ SESSION=""
 MAIN_OVERRIDE=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --worktree) COPY_MODE_OVERRIDE="git"; shift ;;
-        --copy)     COPY_MODE_OVERRIDE="full"; shift ;;
-        --local)    COPY_MODE_OVERRIDE="local"; shift ;;
+        --worktree)
+            COPY_MODE_OVERRIDE="git"
+            shift
+            ;;
+        --copy)
+            COPY_MODE_OVERRIDE="full"
+            shift
+            ;;
+        --local)
+            COPY_MODE_OVERRIDE="local"
+            shift
+            ;;
         use)
             shift
             if [[ $# -eq 0 ]]; then
-                echo "Error: 'use' requires an agent alias (e.g. ae myproject use codex)" >&2; exit 1
+                echo "Error: 'use' requires an agent alias (e.g. ae myproject use codex)" >&2
+                exit 1
             fi
-            MAIN_OVERRIDE="$1"; shift
+            MAIN_OVERRIDE="$1"
+            shift
             ;;
-        --*)    echo "Error: unknown flag '$1'. Use --worktree, --copy, or --local." >&2; exit 1 ;;
-        *)      SESSION="$1"; shift ;;
+        --*)
+            echo "Error: unknown flag '$1'. Use --worktree, --copy, or --local." >&2
+            exit 1
+            ;;
+        *)
+            SESSION="$1"
+            shift
+            ;;
     esac
 done
 
@@ -1347,7 +1405,7 @@ if [[ "$MAIN_RAW" == *:* ]]; then
     MAIN_NAME="${MAIN_RAW#*:}"
 else
     MAIN_ALIAS="$MAIN_RAW"
-    MAIN_NAME="$MAIN_RAW"  # default name = alias
+    MAIN_NAME="$MAIN_RAW" # default name = alias
 fi
 if [[ "$MAIN_NAME" == *:* ]]; then
     echo "Error: agent name '${MAIN_NAME}' cannot contain ':' — use alias:name format (one colon)" >&2
@@ -1390,7 +1448,7 @@ WORKER_CMDS=()
 WORKER_ALIASES=()
 WORKER_NAMES=()
 if [[ -n "$WORKERS_RAW" ]]; then
-    IFS=',' read -ra _entries <<< "$WORKERS_RAW"
+    IFS=',' read -ra _entries <<<"$WORKERS_RAW"
     for entry in "${_entries[@]}"; do
         entry="$(echo "$entry" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
         if [[ "$entry" == *:* ]]; then
@@ -1402,7 +1460,7 @@ if [[ -n "$WORKERS_RAW" ]]; then
             fi
         else
             walias="$entry"
-            wname="$entry"  # default name = alias
+            wname="$entry" # default name = alias
         fi
         cmd="$(get_config "agents.${walias}")"
         if [[ -z "$cmd" ]]; then
@@ -1419,7 +1477,7 @@ if [[ -n "$WORKERS_RAW" ]]; then
     for i in "${!WORKER_NAMES[@]}"; do
         wn="${WORKER_NAMES[$i]}"
         if [[ -n "${_name_seen[$wn]:-}" ]]; then
-            WORKER_NAMES[$i]="${wn}-${i}"
+            WORKER_NAMES[i]="${wn}-${i}"
         fi
         _name_seen["${WORKER_NAMES[$i]}"]=1
     done
@@ -1520,7 +1578,7 @@ for i in "${!WORKER_CMDS[@]}"; do
 done
 
 # Distribute panes evenly
-if (( ${#PANE_IDS[@]} > 1 )); then
+if ((${#PANE_IDS[@]} > 1)); then
     if [[ "$LAYOUT" == "vertical" ]]; then
         tmux select-layout -t "$SESSION" even-horizontal
     else
@@ -1532,14 +1590,14 @@ fi
 tmux select-pane -t "${PANE_IDS[0]}" -T "ae:${MAIN_ALIAS}:${MAIN_NAME}"
 tmux set-option -p -t "${PANE_IDS[0]}" @ae_agent "${MAIN_ALIAS}:${MAIN_NAME}"
 for i in "${!WORKER_ALIASES[@]}"; do
-    idx=$(( i + 1 ))
+    idx=$((i + 1))
     tmux select-pane -t "${PANE_IDS[$idx]}" -T "ae:${WORKER_ALIASES[$i]}:${WORKER_NAMES[$i]}"
     tmux set-option -p -t "${PANE_IDS[$idx]}" @ae_agent "${WORKER_ALIASES[$i]}:${WORKER_NAMES[$i]}"
 done
 
 # --- Generate helper scripts and workspace manifest ---
 AE_META="${SESSIONS_DIR}/${SESSION}"
-mkdir -p -m 0700 "$AE_META"
+mkdir -p "$AE_META" && chmod 0700 "$AE_META"
 
 # Session metadata (used by ae list/end for stopped sessions, and by spawn helper)
 # Always write full meta: on resume, preserve original mode/origin from existing file
@@ -1553,7 +1611,6 @@ if [[ "$RESUMING" == true ]]; then
     META_ORIGIN="${META_ORIGIN:-$ORIGIN_DIR}"
 fi
 
-MAIN_TOOL_KIND="$(tool_kind_from_cmd "$MAIN_CMD")"
 MAIN_SESSION_ID="$(resolve_agent_session_id "$MAIN_CMD" "main")"
 
 declare -a WORKER_SESSION_IDS=()
@@ -1579,7 +1636,7 @@ if [[ "$RESUMING" == true ]]; then
             SPAWNED_CMDS+=("$scmd")
             SPAWNED_SESSION_IDS+=("$(resolve_agent_session_id "$scmd" "spawned.${sidx}")")
         fi
-        sidx=$(( sidx + 1 ))
+        sidx=$((sidx + 1))
     done
 
     # Create panes for spawned agents
@@ -1595,7 +1652,7 @@ if [[ "$RESUMING" == true ]]; then
         tmux set-option -p -t "$local_id" @ae_agent "${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]}"
     done
     # Rebalance if spawned agents were added
-    if (( ${#SPAWNED_ALIASES[@]} > 0 )); then
+    if ((${#SPAWNED_ALIASES[@]} > 0)); then
         if [[ "$LAYOUT" == "vertical" ]]; then
             tmux select-layout -t "$SESSION" even-horizontal
         else
@@ -1606,7 +1663,7 @@ fi
 
 AE_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 
-cat > "${AE_META}/meta" <<EOF
+cat >"${AE_META}/meta" <<EOF
 mode=${META_MODE}
 origin=${META_ORIGIN}
 session=${SESSION}
@@ -1619,14 +1676,14 @@ tmux_server=${AE_TMUX_SERVER:-}
 agent.main=${MAIN_ALIAS}:${MAIN_NAME}:${MAIN_SESSION_ID}
 EOF
 for i in "${!WORKER_CMDS[@]}"; do
-    echo "agent.worker.${i}=${WORKER_ALIASES[$i]}:${WORKER_NAMES[$i]}:${WORKER_SESSION_IDS[$i]}" >> "${AE_META}/meta"
+    echo "agent.worker.${i}=${WORKER_ALIASES[$i]}:${WORKER_NAMES[$i]}:${WORKER_SESSION_IDS[$i]}" >>"${AE_META}/meta"
 done
 for i in "${!SPAWNED_ALIASES[@]}"; do
-    echo "agent.spawned.${i}=${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]}:${SPAWNED_SESSION_IDS[$i]}" >> "${AE_META}/meta"
+    echo "agent.spawned.${i}=${SPAWNED_ALIASES[$i]}:${SPAWNED_NAMES[$i]}:${SPAWNED_SESSION_IDS[$i]}" >>"${AE_META}/meta"
 done
 
 # Shared library sourced by all helpers — tmux shim, name resolution, locking
-cat > "${AE_META}/_lib" <<'LIBEOF'
+cat >"${AE_META}/_lib" <<'LIBEOF'
 # tmux server shim
 _AE_META_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _ts="$(grep '^tmux_server=' "$_AE_META_DIR/meta" | cut -d= -f2-)"
@@ -1718,7 +1775,7 @@ LIBEOF
 chmod 0700 "${AE_META}/_lib"
 
 # Helper: send <target> <message> — focuses pane, pastes text, submits
-cat > "${AE_META}/send" <<'SENDEOF'
+cat >"${AE_META}/send" <<'SENDEOF'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 if [[ $# -lt 2 ]]; then
@@ -1750,7 +1807,7 @@ SENDEOF
 chmod 0700 "${AE_META}/send"
 
 # Helper: ask <target> <question> — structured send with reply-to metadata
-cat > "${AE_META}/ask" <<'ASKEOF'
+cat >"${AE_META}/ask" <<'ASKEOF'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 META_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -1774,7 +1831,7 @@ ASKEOF
 chmod 0700 "${AE_META}/ask"
 
 # Helper: peek <target> [lines] — capture recent output from another agent's pane
-cat > "${AE_META}/peek" <<'PEEKEOF'
+cat >"${AE_META}/peek" <<'PEEKEOF'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 if [[ $# -lt 1 ]]; then
@@ -1799,7 +1856,7 @@ PEEKEOF
 chmod 0700 "${AE_META}/peek"
 
 # Helper: agents — list all agents in the session
-cat > "${AE_META}/agents" <<'AGENTSEOF'
+cat >"${AE_META}/agents" <<'AGENTSEOF'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 
@@ -1826,7 +1883,7 @@ AGENTSEOF
 chmod 0700 "${AE_META}/agents"
 
 # Helper: focus <target> — switch to another agent's pane by name
-cat > "${AE_META}/focus" <<'FOCUSEOF'
+cat >"${AE_META}/focus" <<'FOCUSEOF'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 if [[ $# -lt 1 ]]; then
@@ -1841,7 +1898,7 @@ FOCUSEOF
 chmod 0700 "${AE_META}/focus"
 
 # Helper: interrupt <target> [message] — cancel current generation, optionally redirect
-cat > "${AE_META}/interrupt" <<'INTERRUPTEOF'
+cat >"${AE_META}/interrupt" <<'INTERRUPTEOF'
 #!/usr/bin/env bash
 source "$(cd "$(dirname "$0")" && pwd)/_lib"
 if [[ $# -lt 1 ]]; then
@@ -1877,7 +1934,7 @@ INTERRUPTEOF
 chmod 0700 "${AE_META}/interrupt"
 
 # Helper: spawn <alias> [prompt] — thin wrapper that calls ae _spawn
-cat > "${AE_META}/spawn" <<'SPAWNEOF'
+cat >"${AE_META}/spawn" <<'SPAWNEOF'
 #!/usr/bin/env bash
 set -euo pipefail
 META_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -1900,7 +1957,7 @@ SPAWNEOF
 chmod 0700 "${AE_META}/spawn"
 
 # Helper: retire <agent> — remove a spawned agent from the session
-cat > "${AE_META}/retire" <<'RETIREEOF'
+cat >"${AE_META}/retire" <<'RETIREEOF'
 #!/usr/bin/env bash
 set -euo pipefail
 META_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -1925,7 +1982,7 @@ RETIREEOF
 chmod 0700 "${AE_META}/retire"
 
 # Helper: register-sid — codex agents run this to self-register their session ID
-cat > "${AE_META}/register-sid" <<'REGSIDEOF'
+cat >"${AE_META}/register-sid" <<'REGSIDEOF'
 #!/usr/bin/env bash
 # Find the most recent codex session file and write its UUID to codex.<slot>.sid
 META_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -1952,14 +2009,14 @@ if [[ "$RESUMING" == true ]]; then
     MAIN_RESUME="$(inject_ae_context "$MAIN_RESUME" "$AE_META" "$SESSION" "$WORK_DIR" "main")"
     send_agent_cmd "${PANE_IDS[0]}" "$MAIN_RESUME" "$(initial_prompt_for_cmd "$MAIN_CMD" "$AE_META" "$SESSION" "$WORK_DIR")"
     for i in "${!WORKER_CMDS[@]}"; do
-        idx=$(( i + 1 ))
+        idx=$((i + 1))
         WORKER_RESUME="$(resume_cmd_from_cmd "${WORKER_CMDS[$i]}" "${WORKER_SESSION_IDS[$i]:-}")"
         WORKER_RESUME="$(inject_ae_context "$WORKER_RESUME" "$AE_META" "$SESSION" "$WORK_DIR" "worker.${i}")"
         send_agent_cmd "${PANE_IDS[$idx]}" "$WORKER_RESUME" "$(initial_prompt_for_cmd "${WORKER_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR")"
     done
     # Resume spawned agents
     for i in "${!SPAWNED_CMDS[@]}"; do
-        sidx=$(( ${#WORKER_CMDS[@]} + i + 1 ))
+        sidx=$((${#WORKER_CMDS[@]} + i + 1))
         SPAWNED_RESUME="$(resume_cmd_from_cmd "${SPAWNED_CMDS[$i]}" "${SPAWNED_SESSION_IDS[$i]:-}")"
         SPAWNED_RESUME="$(inject_ae_context "$SPAWNED_RESUME" "$AE_META" "$SESSION" "$WORK_DIR" "spawned.${i}")"
         send_agent_cmd "${PANE_IDS[$sidx]}" "$SPAWNED_RESUME" "$(initial_prompt_for_cmd "${SPAWNED_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR")"
@@ -1970,7 +2027,7 @@ else
     SCOPED_MAIN="$(inject_ae_context "$SCOPED_MAIN" "$AE_META" "$SESSION" "$WORK_DIR" "main")"
     send_agent_cmd "${PANE_IDS[0]}" "$SCOPED_MAIN" "$(initial_prompt_for_cmd "$MAIN_CMD" "$AE_META" "$SESSION" "$WORK_DIR")"
     for i in "${!WORKER_CMDS[@]}"; do
-        idx=$(( i + 1 ))
+        idx=$((i + 1))
         SCOPED_WORKER="$(inject_session_id "${WORKER_CMDS[$i]}" "${WORKER_SESSION_IDS[$i]:-}")"
         SCOPED_WORKER="$(inject_ae_context "$SCOPED_WORKER" "$AE_META" "$SESSION" "$WORK_DIR" "worker.${i}")"
         send_agent_cmd "${PANE_IDS[$idx]}" "$SCOPED_WORKER" "$(initial_prompt_for_cmd "${WORKER_CMDS[$i]}" "$AE_META" "$SESSION" "$WORK_DIR")"
@@ -1984,7 +2041,7 @@ if [[ "$RESUMING" != true ]]; then
     fi
     for i in "${!WORKER_CMDS[@]}"; do
         if [[ "$(tool_kind_from_cmd "${WORKER_CMDS[$i]}")" == "codex" ]]; then
-            capture_codex_session_id "${PANE_IDS[$(( i + 1 ))]}" "worker.${i}" "$AE_META" &
+            capture_codex_session_id "${PANE_IDS[$((i + 1))]}" "worker.${i}" "$AE_META" &
         fi
     done
 fi

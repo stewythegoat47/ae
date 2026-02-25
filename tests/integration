@@ -12,7 +12,6 @@ AE="$(cd "$(dirname "$0")/.." && pwd)/ae"
 # Isolated environment
 TMPDIR="$(mktemp -d)"
 export AE_TMUX_SERVER="ae-test-$$"
-REAL_HOME="$HOME"
 export HOME="$TMPDIR/home"
 mkdir -p "$HOME/.ae"
 

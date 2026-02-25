@@ -171,6 +171,24 @@ No custom protocols, no frameworks. Just system prompts and bash scripts that ag
 - [git](https://git-scm.com/)
 - At least one AI coding agent ([Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [OpenCode](https://github.com/opencode-ai/opencode), or any CLI tool)
 
+## Development
+
+Requires [just](https://github.com/casey/just) as task runner.
+
+```bash
+just check            # lint (shellcheck) + format check (shfmt)
+just test             # unit + integration tests
+just format           # auto-format with shfmt
+just release patch    # full release: check → test → bump → changelog → tag → gh release
+```
+
+Dev tooling:
+
+- [shellcheck](https://github.com/koalaman/shellcheck) — bash linter
+- [shfmt](https://github.com/mvdan/sh) — bash formatter (indent=4, case-indent)
+- [git-cliff](https://github.com/orhun/git-cliff) — changelog from conventional commits
+- [gh](https://cli.github.com/) — GitHub CLI (releases)
+
 ## License
 
 MIT

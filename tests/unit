@@ -257,7 +257,9 @@ printf '[prompt]\ninstructions = "local rules"\n' > "$_local_cfg"
 CONFIG_FILE="$_global_cfg"
 AE_LOCAL_CONFIG="$_local_cfg"
 result_override="$(inject_ae_context "claude --model opus" "/tmp/ae-test" "sess" "/home/user")"
+# shellcheck disable=SC2034 # used by sourced parse_config()
 CONFIG_FILE="/dev/null"
+# shellcheck disable=SC2034
 AE_LOCAL_CONFIG=""
 rm -f "$_global_cfg" "$_local_cfg"
 

